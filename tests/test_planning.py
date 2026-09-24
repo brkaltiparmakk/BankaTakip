@@ -177,3 +177,51 @@ def test_rules_and_backfill(tmp_path, config):
                      detail="BILGISAYAR/TEKNOLOJI: 72699.01 TL · Elektronik · " + AXESS)
     assert storage.backfill_installments(installments) == 1
     assert storage.installment_plan(TODAY)["items"][0]["installments"] == 9
+
+
+def test_counterparty_and_card_debt_real_formats(tmp_path):
+    from bankatakip.parsers.notifications import counterparty
+
+    text = ("Değerli Akbanklı, 0729 Şube 5***8 no.lu hesabınıza YAKUP CİVELEK tarafından 19.500,00 TL "
+            "HAVALE girişi olmuştur.")
+    tx = parse_notification(text, "Hesabınıza nakit girişi olmuştur", datetime(2026, 8, 12, 12), "Akbank")
+    assert tx.description == "YAKUP CİVELEK · Havale" and tx.amount == Decimal("-19500.00")
+    assert counterparty("hesabınızdan BÜŞRA METİN tarafına 5.800,00 TL HAVALE çıkışı") == "BÜŞRA METİN · Havale"
+    assert card_debt("5839 ile biten Axess kredi kartınızın 02.10.2026 tarihinde kesilecek ekstresine ait "
+                     "güncel borç tutarı 19,395.90 TL'ye ulaşmıştır.") == Decimal("19395.90")
+
+    # eski kayıtlar mail günlüğündeki örnekten düzeltilir
+    storage = Storage(tmp_path / "c.db")
+    storage.add_notification("Akbank", "icloud", Transaction(date(2026, 8, 12), "Hesaba para girişi", Decimal("-19500.00"), "Transfer"))
+    storage.log_mail("icloud", "<n>", "bildirim_eklendi", bank="Akbank", received_at=datetime(2026, 8, 12, 12, 57),
+                     detail="Hesaba para girişi: -19500.00 TL · Transfer · " + text)
+    assert storage.backfill_counterparties(counterparty) == 1
+    assert storage.list_transactions()[0]["description"] == "YAKUP CİVELEK · Havale"
+
+
+def test_salary_api(tmp_path, config, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from bankatakip.web import app as web_app
+
+    monkeypatch.setenv("AUTH_DISABLED", "1")
+    monkeypatch.delenv("VERCEL", raising=False)
+    storage = Storage(config.database)
+    storage.add_notification("Akbank", "icloud", Transaction(date(2025, 6, 11), "Maaş ödemesi", Decimal(0), "Maaş"),
+                             amount_auto=True)
+    storage.add_notification("Akbank", "icloud", Transaction(date(2026, 9, 11), "Maaş ödemesi", Decimal(0), "Maaş"),
+                             amount_auto=True)
+    web_app.app.dependency_overrides[web_app.get_config] = lambda: config
+    client = TestClient(web_app.app)
+    h = {"X-Requested-With": "bankatakip"}
+    try:
+        assert client.get("/api/salary").json()["payments"] == 2
+        assert client.put("/api/salary", json={"from_month": "2026-13", "amount": 1}, headers=h).status_code == 422
+        assert client.put("/api/salary", json={"from_month": "2026-01", "amount": 80000}, headers=h).json()["updated"] == 2
+        assert client.put("/api/salary", json={"from_month": "2024-01", "amount": 50000}, headers=h).json()["updated"] == 1
+        s = client.get("/api/salary").json()
+        assert s["total"] == 130000 and [e["from_month"] for e in s["entries"]] == ["2024-01", "2026-01"]
+        report = client.get("/api/report?month=2026-09").json()
+        assert report["kpi"]["income"] == 80000
+    finally:
+        web_app.app.dependency_overrides.clear()

@@ -88,7 +88,7 @@ def test_card_statement_body_and_limit_notification(config, tmp_path):
     })
     sync_mod._sync_bank(client, "INBOX", bank, None, config, storage, sync_mod.SyncReport())
     status = {r["message_id"]: r["status"] for r in storage.list_mail_log()}
-    assert status == {"<e>": "eklendi", "<k>": "bildirim_eklendi", "<d>": "bildirim_eklendi", "<m>": "bilgi"}
+    assert status == {"<e>": "eklendi", "<k>": "bildirim_eklendi", "<d>": "bildirim_eklendi", "<m>": "bildirim_eklendi"}
 
     [st] = [s for s in storage.list_statements() if s["due_date"]]
     assert Decimal(st["minimum_payment"]) == Decimal("41909.21")
@@ -104,6 +104,16 @@ def test_card_statement_body_and_limit_notification(config, tmp_path):
     assert tx["BENZIN ISTASYONU"]["category"] == "Akaryakıt"
     assert tx["BENZIN ISTASYONU"]["account_id"] == accounts["Akbank Vadesiz"]["id"]
     assert accounts["Akbank Vadesiz"]["estimate"] is None  # bakiye bilinmiyor → elle girilecek
+
+    # maaş mailinde tutar yok: ayar girilene kadar 0, girilince o tarihteki tutarla gelir olur
+    salary = tx["Maaş ödemesi"]
+    assert salary["category"] == "Maaş" and Decimal(salary["amount"]) == 0
+    assert salary["account_id"] == accounts["Akbank Vadesiz"]["id"]
+    assert storage.set_salary("2020-01", Decimal("60000")) == 1
+    assert storage.set_salary("2099-01", Decimal("90000")) == 0     # gelecekteki zam bu ödemeyi etkilemez
+    assert Decimal(storage.list_transactions(search="maaş")[0]["amount"]) == Decimal("-60000")
+    overview = storage.salary_overview()
+    assert overview["payments"] == 1 and overview["total"] == Decimal("60000")
 
 
 def test_manual_balance_api(config, monkeypatch):

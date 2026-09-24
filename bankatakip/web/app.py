@@ -15,7 +15,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..config import Config, ConfigError, load_config
 from ..ai import AIError, GeminiClient, ai_enabled
@@ -487,3 +487,21 @@ def weekly_now(user: str = User, config: Config = Depends(get_config),
         return {"ok": True, "message": send_weekly_summary(config, storage, force=True)}
     except Exception as exc:
         raise HTTPException(502, f"Özet gönderilemedi: {exc}")
+
+
+# --- maaş ---
+class SalaryInput(BaseModel):
+    from_month: str = Field(pattern=MONTH_RE)
+    amount: Decimal | None = None
+
+
+@app.get("/api/salary")
+def salary(user: str = User, storage: Storage = Depends(get_storage)):
+    return _jsonable(storage.salary_overview())
+
+
+@app.put("/api/salary", dependencies=[SameOrigin])
+def set_salary(body: SalaryInput, user: str = User, storage: Storage = Depends(get_storage)):
+    if body.amount is not None and body.amount < 0:
+        raise HTTPException(400, "Maaş tutarı negatif olamaz.")
+    return {"ok": True, "updated": storage.set_salary(body.from_month, body.amount)}

@@ -121,6 +121,13 @@ CREATE TABLE IF NOT EXISTS loans (
     created_at             TEXT NOT NULL
 );
 
+-- Maaş tutarı geçmişi: mailde tutar yazmayan maaş ödemeleri bu tutarla kaydedilir
+CREATE TABLE IF NOT EXISTS salary (
+    from_month TEXT PRIMARY KEY,       -- YYYY-AA: bu aydan itibaren geçerli
+    amount     TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_tx_statement ON transactions(statement_id);
 """
@@ -200,6 +207,7 @@ class Storage:
         ("transactions", "account_id", "INTEGER"),
         ("transactions", "category_manual", "INTEGER"),
         ("transactions", "installments", "INTEGER"),
+        ("transactions", "amount_auto", "INTEGER"),   # 1: tutar maaş ayarından hesaplanır
     ]
 
     def _migrate(self) -> None:
@@ -280,11 +288,12 @@ class Storage:
             (limit,),
         )
 
-    def reset_skipped_mails(self) -> int:
+    def reset_skipped_mails(self, statuses: tuple[str, ...] | None = None) -> int:
         """Ekstre eklenmemiş mailleri yeniden taranacak hale getirir (ör. anahtar kelime
         değiştikten sonra). Kaydı olmayan eski işaretler de temizlenir. Sıfırlanan mail
         sayısını döndürür."""
-        placeholders = ", ".join("?" for _ in self.SKIPPED_STATUSES)
+        statuses = statuses or self.SKIPPED_STATUSES
+        placeholders = ", ".join("?" for _ in statuses)
         try:
             cur = self._execute(
                 f"""DELETE FROM processed_mails WHERE NOT EXISTS (
@@ -292,10 +301,10 @@ class Storage:
                         WHERE l.account = processed_mails.account
                           AND l.message_id = processed_mails.message_id
                           AND l.status NOT IN ({placeholders}))""",
-                self.SKIPPED_STATUSES,
+                statuses,
             )
             count = cur.rowcount
-            self._execute(f"DELETE FROM mail_log WHERE status IN ({placeholders})", self.SKIPPED_STATUSES)
+            self._execute(f"DELETE FROM mail_log WHERE status IN ({placeholders})", statuses)
             # Son tarama tarihini sıfırla ki eski mailler de yeniden aransın
             self._execute("DELETE FROM meta WHERE key LIKE ?", ("last_sync:%",))
             self.conn.commit()
@@ -404,7 +413,7 @@ class Storage:
             (bank, due_date.isoformat(), str(period_debt)),
         ) is not None
 
-    def add_notification(self, bank: str, source: str, tx: "Transaction") -> int:
+    def add_notification(self, bank: str, source: str, tx: "Transaction", amount_auto: bool = False) -> int:
         """Anlık bildirimden gelen işlemi, o bankanın o ayki "bildirimler" kaydına ekler."""
         month = tx.date.strftime("%Y-%m")
         key = f"bildirim:{source}:{bank}:{month}"
@@ -421,9 +430,9 @@ class Storage:
                 ).fetchone()["id"]
             self._execute(
                 """INSERT INTO transactions (statement_id, bank, date, description, amount, category,
-                       account_id, installments) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                       account_id, installments, amount_auto) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (statement_id, bank, tx.date.isoformat(), tx.description, str(tx.amount), tx.category,
-                 account_id, tx.installments),
+                 account_id, tx.installments, 1 if amount_auto else None),
             )
             self.conn.commit()
         except Exception:
@@ -846,6 +855,92 @@ class Storage:
                      (received + timedelta(days=1)).isoformat()))
                 if tx:
                     self._execute("UPDATE transactions SET installments = ? WHERE id = ?", (n, tx["id"]))
+                    filled += 1
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return filled
+
+    # --- maaş ---
+    def list_salary(self) -> list[dict]:
+        return [{"from_month": r["from_month"], "amount": Decimal(r["amount"])}
+                for r in self._all("SELECT from_month, amount FROM salary ORDER BY from_month")]
+
+    def salary_for(self, day: date, entries: list[dict] | None = None) -> Decimal:
+        """O tarihteki maaş: başlangıcı o aydan önce/o ay olan en son kayıt; tarih ilk kayıttan
+        önceyse ilk kayıt (geçmiş maaşlar için yaklaşık). Hiç kayıt yoksa 0."""
+        entries = self.list_salary() if entries is None else entries
+        if not entries:
+            return Decimal(0)
+        month = day.isoformat()[:7]
+        valid = [e for e in entries if e["from_month"] <= month]
+        return (valid[-1] if valid else entries[0])["amount"]
+
+    def set_salary(self, from_month: str, amount: Decimal | None) -> int:
+        """Maaş kaydı ekler/günceller (amount None: siler) ve otomatik maaş işlemlerini yeniden
+        hesaplar. Güncellenen işlem sayısını döndürür."""
+        try:
+            self._execute("DELETE FROM salary WHERE from_month = ?", (from_month,))
+            if amount:
+                self._execute("INSERT INTO salary (from_month, amount, created_at) VALUES (?, ?, ?)",
+                              (from_month, str(amount), _now()))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return self.apply_salary()
+
+    def apply_salary(self) -> int:
+        entries = self.list_salary()
+        rows = self._all("SELECT id, date, amount FROM transactions WHERE amount_auto = 1")
+        changed = 0
+        try:
+            for r in rows:
+                amount = str(-self.salary_for(date.fromisoformat(r["date"][:10]), entries))
+                if amount != r["amount"]:
+                    self._execute("UPDATE transactions SET amount = ? WHERE id = ?", (amount, r["id"]))
+                    changed += 1
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return changed
+
+    def salary_overview(self) -> dict:
+        rows = self._all("SELECT date, amount FROM transactions WHERE amount_auto = 1 ORDER BY date")
+        return {
+            "entries": self.list_salary(),
+            "payments": len(rows),
+            "first": rows[0]["date"] if rows else None,
+            "last": rows[-1]["date"] if rows else None,
+            "total": -sum((Decimal(r["amount"]) for r in rows), Decimal(0)),
+        }
+
+    def backfill_counterparties(self, parse) -> int:
+        """Eski "Hesaba para girişi / Hesaptan para çıkışı" kayıtlarına mail günlüğündeki gövde
+        örneğinden karşı tarafın adını yazar ("YAKUP CİVELEK · Havale")."""
+        import re
+        from datetime import timedelta
+
+        generic = ("Hesaba para girişi", "Hesaptan para çıkışı")
+        filled = 0
+        rows = self._all("SELECT bank, received_at, detail FROM mail_log WHERE status = 'bildirim_eklendi' "
+                         "AND (detail LIKE ? OR detail LIKE ?)", tuple(g + ":%" for g in generic))
+        try:
+            for row in rows:
+                name = parse(row["detail"] or "")
+                m = re.search(r": (-?\d+(?:\.\d+)?) TL ·", row["detail"] or "")
+                if not name or not m or not row["received_at"]:
+                    continue
+                received = date.fromisoformat(row["received_at"][:10])
+                tx = self._one(
+                    """SELECT id FROM transactions WHERE bank = ? AND amount = ? AND description IN (?, ?)
+                       AND date >= ? AND date <= ? ORDER BY date LIMIT 1""",
+                    (row["bank"], m.group(1), *generic, (received - timedelta(days=2)).isoformat(),
+                     (received + timedelta(days=1)).isoformat()))
+                if tx:
+                    self._execute("UPDATE transactions SET description = ? WHERE id = ?", (name, tx["id"]))
                     filled += 1
             self.conn.commit()
         except Exception:

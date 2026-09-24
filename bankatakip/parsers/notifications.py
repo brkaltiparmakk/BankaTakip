@@ -97,8 +97,15 @@ def remaining_limit(text: str) -> Decimal | None:
 
 
 INSTALLMENTS_RE = re.compile(r"\b(\d{1,2})\s*(?:ay\s+vadeli|taksitli|taksit\s+ile)\b")
-# "Kredi kartı güncel dönem borcunuz 12.345,67 TL'dir"
-CARD_DEBT_RE = re.compile(r"(?:guncel\s+)?donem\s+borcu\w*[^0-9]{0,30}?(?=[-+]?\d)")
+# "... ekstresine ait güncel borç tutarı 19,395.90 TL'ye ulaşmıştır" (Akbank),
+# "güncel dönem borcunuz 12.345,67 TL'dir"
+CARD_DEBT_RE = re.compile(r"(?:guncel\s+borc\s+tutari|(?:guncel\s+)?donem\s+borcu)\w*[^0-9]{0,30}?(?=[-+]?\d)")
+# Havale/FAST/EFT'nin karşı tarafı: "hesabınıza YAKUP CİVELEK tarafından 19.500,00 TL HAVALE girişi",
+# "hesabınızdan BÜŞRA METİN tarafına 5.800,00 TL HAVALE çıkışı"
+COUNTERPARTY_RE = re.compile(
+    r"hesabiniza(?:n)?\s+(?P<in>.{2,60}?)\s+tarafindan\s+[\d.,]+\s*tl\s+(?P<kin>[a-z]+)"
+    r"|hesabinizdan\s+(?P<out>.{2,60}?)\s+tarafina\s+[\d.,]+\s*tl\s+(?P<kout>[a-z]+)")
+SALARY_SUBJECT = "maas odemeniz"
 # Kredi borç bilgisi: "kalan anapara/borç ... TL", "kalan taksit sayısı: 14", "taksit tutarı ... TL"
 LOAN_DEBT_RE = re.compile(r"kalan\s+(?:toplam\s+)?(?:kredi\s+)?(?:borc|anapara)\w*[^0-9]{0,30}?(?=\d)")
 LOAN_LEFT_RE = re.compile(r"kalan\s+taksit\s*(?:sayisi)?\w*[^0-9]{0,20}?(\d{1,3})\b")
@@ -114,6 +121,22 @@ INFO_RULES = [
 def info_kind(subject: str) -> str | None:
     folded = tr_fold(subject)
     return next((kind for phrase, kind in INFO_RULES if phrase in folded), None)
+
+
+def is_salary(subject: str) -> bool:
+    """"Maaş ödemeniz gerçekleşmiştir": Akbank bu mailde tutar yazmaz."""
+    return SALARY_SUBJECT in tr_fold(subject)
+
+
+def counterparty(text: str) -> str | None:
+    """Hesap hareketinin karşı tarafı: "YAKUP CİVELEK · Havale"."""
+    m = COUNTERPARTY_RE.search(tr_fold(text))
+    if not m:
+        return None
+    group = "in" if m.group("in") else "out"
+    name = " ".join(text[m.start(group): m.end(group)].split()).strip(" -")
+    kind = text[m.start("k" + group): m.end("k" + group)]
+    return f"{name} · {kind.capitalize()}" if name else None
 
 
 def installments(text: str) -> int | None:
@@ -228,7 +251,7 @@ def parse_notification(text: str, subject: str, received: datetime | None,
     if movement:
         # Hesap hareketinde kategori ipucu "Transfer": açıklama başka bir kurala uymazsa harcama sayılmaz
         sector = MOVEMENT_CATEGORY
-        description = _merchant(text) or MOVEMENT_DESCRIPTIONS[movement]
+        description = counterparty(text) or _merchant(text) or MOVEMENT_DESCRIPTIONS[movement]
     else:
         sector = _sector(text)
         description = sector or _merchant(text) or _generic_description(text)

@@ -15,9 +15,10 @@ from .parsers import PdfPasswordError, detect_kind, extract_document_text, get_p
 from .categories import CategoryResolver, recategorizer
 from .parsers.generic import GenericParser, detect_account
 from .parsers.notifications import (
-    account_balance, card_debt, has_amount, info_kind, installments, loan_info, notification_account,
+    account_balance, card_debt, counterparty, has_amount, info_kind, installments, is_salary, loan_info, notification_account,
     notification_sign, parse_notification, remaining_limit,
 )
+from .models import Transaction
 from .storage import Storage, file_hash
 
 log = logging.getLogger(__name__)
@@ -140,12 +141,20 @@ def _record_info(kind: str, mail, bank: BankConfig, storage: Storage) -> str:
         if any(v is not None for v in info.values()):
             storage.update_loan_info(bank.name, as_of, **info)
             return f"kredi: kalan borç {info['remaining_debt']} · kalan taksit {info['remaining_installments']} · {sample}"
-    return "okunamadı · " + sample
+    # Biçimi bilinmeyen mail: sonradan kural yazabilmek için uzun örnek saklanır
+    return "okunamadı · " + _sample(mail.body_text, 1500)
+
+
+def _add_salary(mail, bank: BankConfig, source: str, storage: Storage) -> None:
+    day = (mail.received or datetime.now()).date()
+    tx = Transaction(date=day, description="Maaş ödemesi", amount=-storage.salary_for(day), category="Maaş",
+                     account=notification_account(mail.body_text, mail.subject, bank.name))
+    storage.add_notification(bank.name, source, tx, amount_auto=True)
 
 
 # Okuma kuralları değiştiğinde artırılır: atlanan mailler yeniden taranır ve elle
 # değiştirilmemiş işlemlerin kategorileri yeni kurallarla güncellenir.
-RULES_VERSION = "3"
+RULES_VERSION = "4"
 
 
 def apply_rule_updates(config: Config, storage: Storage) -> bool:
@@ -155,6 +164,9 @@ def apply_rule_updates(config: Config, storage: Storage) -> bool:
     parser = GenericParser(categories=config.categories)
     storage.recategorize(recategorizer(parser, config.categories, storage.rule_pairs()))
     storage.backfill_installments(installments)
+    storage.backfill_counterparties(counterparty)
+    # "bilgi" olarak geçilen mailler (maaş, kart borcu, kredi) yeni kurallarla bir kez daha okunur
+    storage.reset_skipped_mails(("bilgi",))
     storage.set_meta("rules_version", RULES_VERSION)
     return True
 
@@ -351,8 +363,16 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
 
         if is_notification and not is_statement:
             _record_limit(mail, bank, storage)
+            if not has_amount(mail.body_text) and is_salary(mail.subject):
+                # Akbank maaş mailinde tutar yazmaz: tutar panelde girilen maaş ayarından gelir
+                _add_salary(mail, bank, account, storage)
+                report.transactions_added += 1
+                record(header, "bildirim_eklendi", "Maaş ödemesi: tutar maaş ayarından · "
+                       + _sample(mail.body_text, 200))
+                storage.mark_mail_processed(account, header.message_id)
+                continue
             if not has_amount(mail.body_text):
-                # ör. "Maaş ödemeniz gerçekleşmiştir" maillerinde tutar yazmıyor; okunacak işlem yok
+                # ör. ATM para çekme maillerinde tutar yazmıyor; okunacak işlem yok
                 record(header, "bilgi", "tutar içermiyor · " + _sample(mail.body_text, 300))
                 storage.mark_mail_processed(account, header.message_id)
                 continue

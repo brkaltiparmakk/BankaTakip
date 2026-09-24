@@ -18,7 +18,7 @@ PG_URL = os.environ.get("TEST_DATABASE_URL")
 def _reset_pg(url):
     import psycopg
     with psycopg.connect(url, autocommit=True) as conn:
-        conn.execute("DROP TABLE IF EXISTS transactions, statements, processed_mails, meta, mail_log, balance_snapshots, accounts, budgets, category_rules, loans CASCADE")
+        conn.execute("DROP TABLE IF EXISTS transactions, statements, processed_mails, meta, mail_log, balance_snapshots, accounts, budgets, category_rules, loans, salary CASCADE")
     from bankatakip import storage as storage_mod
     storage_mod._SCHEMA_READY.discard(url)
 

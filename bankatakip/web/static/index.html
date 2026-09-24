@@ -253,6 +253,18 @@ dd { margin: 0; overflow-wrap: anywhere; }
 
   <section id="tab-accounts" hidden>
     <div class="grid" id="accounts-grid"></div>
+    <div class="card" style="margin-bottom:14px">
+      <h2>Maaş</h2>
+      <p class="muted small" style="margin-top:-6px">Akbank "Maaş ödemeniz gerçekleşmiştir" mailinde tutar yazmıyor. Maaşını gir; her maaş maili o tarihteki tutarla gelir olarak kaydedilir. Zam aldığında yeni başlangıç ayıyla ekle, ilk kayıttan önceki maaşlar ilk tutarla sayılır.</p>
+      <div id="salary-info" class="small" style="margin-bottom:8px"></div>
+      <div id="salary-list"></div>
+      <form id="salary-form" class="row" style="margin-top:10px">
+        <label class="small muted" for="salary-month">Başlangıç ayı</label>
+        <input id="salary-month" type="month" required>
+        <input id="salary-amount" type="number" min="0" step="100" inputmode="numeric" placeholder="Net maaş (TL)" aria-label="Net maaş" required>
+        <button class="btn ghost" type="submit">Kaydet</button>
+      </form>
+    </div>
     <div class="card">
       <h2>Aylık gelen / giden</h2>
       <p class="muted" style="font-size:13px;margin-top:-6px">Transferler ve kart ödemeleri dahil tüm para hareketi.</p>
@@ -460,7 +472,37 @@ function parseTL(text) {
   return Number.isFinite(n) ? n : null;
 }
 
+async function loadSalary() {
+  const s = await api("/api/salary");
+  $("salary-info").innerHTML = s.payments
+    ? `${s.payments} maaş ödemesi bulundu (${fmtDate(s.first)} – ${fmtDate(s.last)})` +
+      (s.entries.length ? ` · toplam ${money(s.total)}` : ` · <span class="bad">tutar girilmediği için 0 TL sayılıyor</span>`)
+    : `<span class="muted">Henüz maaş maili bulunmadı; "Şimdi tara" sonrası burada görünür.</span>`;
+  $("salary-list").innerHTML = s.entries.length ? `<table><tbody>${s.entries.map((e) => `<tr>
+      <td>${monthLabel(e.from_month)} itibaren</td><td class="num">${money(e.amount)}</td>
+      <td class="num"><button class="btn link" data-salary-del="${e.from_month}">Sil</button></td></tr>`).join("")}</tbody></table>` : "";
+  if (!$("salary-month").value) $("salary-month").value = s.entries.length ? new Date().toISOString().slice(0, 7) : (s.first || new Date().toISOString()).slice(0, 7);
+}
+async function saveSalary(from_month, amount) {
+  try {
+    const r = await api("/api/salary", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from_month, amount }) });
+    flash(`Maaş kaydedildi; ${r.updated} maaş ödemesinin tutarı güncellendi.`);
+    loadAccounts();
+  } catch (err) { flash(err.message, true); }
+}
+$("salary-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  saveSalary($("salary-month").value, Number($("salary-amount").value));
+  $("salary-amount").value = "";
+});
+$("salary-list").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-salary-del]");
+  if (b) saveSalary(b.dataset.salaryDel, null);
+});
+
 async function loadAccounts() {
+  loadSalary();
   const data = await api("/api/accounts");
   $("accounts-grid").innerHTML = data.accounts.length ? data.accounts.map((a) => {
     const snap = a.snapshot;
