@@ -1,5 +1,10 @@
 pdfplumber>=0.11
 pypdf>=4.0
+cryptography>=42  # AES şifreli PDF'ler için
 PyYAML>=6.0
 python-dotenv>=1.0
-cryptography>=42  # AES şifreli PDF'ler için
+# web paneli / Vercel
+fastapi>=0.110
+httpx>=0.27
+python-multipart>=0.0.9
+psycopg[binary]>=3.1

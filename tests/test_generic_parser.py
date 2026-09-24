@@ -72,3 +72,14 @@ def test_summary_and_categories():
     assert st.summary.minimum_payment == Decimal("1728.60")
     assert [t.category for t in st.transactions] == ["Market", "Ödeme"]
     assert st.transactions[1].amount == Decimal("-2000.00")
+
+
+def test_categorize_word_start():
+    p = GenericParser("Test", {"Market": ["bim", "şok"], "Ulaşım": ["bp", "shell"]})
+    assert p.categorize("BİM") == "Market"
+    assert p.categorize("BIM BIRLESIK MAGAZALAR") == "Market"
+    assert p.categorize("ŞOK MARKET") == "Market"
+    assert p.categorize("IBIMAX") is None
+    assert p.categorize("BP ISTANBUL") == "Ulaşım"
+    assert p.categorize("BPX") is None
+    assert p.categorize("SHELLTR MASLAK") == "Ulaşım"

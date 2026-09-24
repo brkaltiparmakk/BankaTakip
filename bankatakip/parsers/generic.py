@@ -87,6 +87,14 @@ SUMMARY_PATTERNS = {
 }
 
 
+def _keyword_pattern(keyword: str) -> re.Pattern:
+    """Anahtar kelime bir kelimenin başında eşleşmeli ("bim" → "BİM", "BIM A.Ş." ama
+    "IBIMAX" değil). 3 harf ve daha kısa kelimeler tam kelime olarak aranır ("bp")."""
+    keyword = tr_fold(keyword.strip())
+    end = r"(?![a-z0-9])" if len(keyword) <= 3 else ""
+    return re.compile(r"(?<![a-z0-9])" + re.escape(keyword) + end)
+
+
 class GenericParser:
     bank_name = "Bilinmeyen"
 
@@ -94,7 +102,8 @@ class GenericParser:
         if bank_name:
             self.bank_name = bank_name
         self.categories = {
-            cat: [tr_fold(k) for k in keywords] for cat, keywords in (categories or {}).items()
+            cat: [_keyword_pattern(k) for k in keywords if k.strip()]
+            for cat, keywords in (categories or {}).items()
         }
 
     def parse(self, text: str) -> ParsedStatement:
@@ -149,7 +158,7 @@ class GenericParser:
 
     def categorize(self, description: str) -> str | None:
         folded = tr_fold(description)
-        for category, keywords in self.categories.items():
-            if any(k in folded for k in keywords):
+        for category, patterns in self.categories.items():
+            if any(p.search(folded) for p in patterns):
                 return category
         return None

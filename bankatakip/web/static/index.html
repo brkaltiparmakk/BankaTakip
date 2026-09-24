@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BankaTakip</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232f6f5e'/><text x='16' y='22' font-size='16' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'>₺</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg: #f6f5f1; --surface: #ffffff; --surface-2: #efede7; --text: #1d2321; --muted: #69706d;
+  --border: #dedbd2; --accent: #2f6f5e; --accent-text: #ffffff; --danger: #b3452f; --warn: #a86a12;
+  --positive: #2f7a45; --shadow: 0 1px 2px rgba(0,0,0,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141816; --surface: #1c211f; --surface-2: #252b28; --text: #e8ebe9; --muted: #9aa39f;
+    --border: #313935; --accent: #6fbfa6; --accent-text: #0f1a16; --danger: #e5836e; --warn: #e0a64c;
+    --positive: #7fcf94; --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+header { position: sticky; top: 0; z-index: 5; background: var(--surface); border-bottom: 1px solid var(--border); }
+.bar { max-width: 1100px; margin: 0 auto; padding: 10px 16px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.brand { font-weight: 700; font-size: 17px; display: flex; align-items: center; gap: 8px; }
+.brand span { background: var(--accent); color: var(--accent-text); border-radius: 7px; width: 26px; height: 26px;
+  display: inline-grid; place-items: center; font-size: 14px; }
+nav { display: flex; gap: 4px; overflow-x: auto; flex: 1; }
+nav button { background: none; border: 0; padding: 7px 12px; border-radius: 8px; cursor: pointer; color: var(--muted); white-space: nowrap; }
+nav button.active { background: var(--surface-2); color: var(--text); font-weight: 600; }
+.user { color: var(--muted); font-size: 13px; display: flex; gap: 10px; align-items: center; }
+.user a { color: var(--muted); }
+main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
+h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); margin-bottom: 14px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; box-shadow: var(--shadow); min-width: 0; }
+.stat .label { color: var(--muted); font-size: 13px; }
+.stat .value { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+.stat .sub { font-size: 13px; color: var(--muted); }
+.two { display: grid; gap: 14px; grid-template-columns: 2fr 1fr; }
+@media (max-width: 800px) { .two { grid-template-columns: 1fr; } }
+.chart-box { position: relative; height: 280px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+th, td { padding: 9px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+td.desc { white-space: normal; min-width: 180px; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.neg { color: var(--positive); }
+.due { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); gap: 10px; }
+.due:last-child { border-bottom: 0; }
+.pill { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--surface-2); color: var(--muted); }
+.pill.soon { color: var(--danger); background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.pill.near { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.filters > * { flex: 1 1 140px; }
+input, select { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; min-width: 0; }
+select.inline { padding: 3px 6px; font-size: 13px; }
+.btn { background: var(--accent); color: var(--accent-text); border: 0; border-radius: 8px; padding: 9px 16px; cursor: pointer; font-weight: 600; }
+.btn.ghost { background: var(--surface-2); color: var(--text); }
+.btn.link { background: none; color: var(--danger); padding: 3px 6px; font-weight: 500; }
+.btn:disabled { opacity: .6; cursor: default; }
+.muted { color: var(--muted); }
+.empty { text-align: center; color: var(--muted); padding: 30px 10px; }
+.notice { border-radius: 10px; padding: 12px 14px; margin-bottom: 14px; background: var(--surface-2); font-size: 14px; }
+.notice.error { color: var(--danger); }
+.notice ul { margin: 6px 0 0; padding-left: 18px; }
+.login { max-width: 380px; margin: 12vh auto; text-align: center; }
+.login .btn { display: inline-block; text-decoration: none; margin-top: 12px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; font-size: 14px; }
+dt { color: var(--muted); }
+dd { margin: 0; overflow-wrap: anywhere; }
+.show-sm { display: none; }
+[hidden] { display: none !important; }
+@media (max-width: 640px) {
+  .bar { gap: 6px 12px; padding-bottom: 6px; }
+  .user { margin-left: auto; }
+  .user span { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  nav { order: 3; flex-basis: 100%; margin: 0 -4px; }
+  .hide-sm { display: none; }
+  .show-sm { display: block !important; margin-top: 4px; }
+  th, td { padding: 8px 5px; }
+  td { white-space: normal; }
+  td.num { white-space: nowrap; }
+  td.desc { min-width: 0; }
+  .card { padding: 12px; }
+}
+</style>
+</head>
+<body>
+<header id="header" hidden>
+  <div class="bar">
+    <div class="brand"><span>₺</span>BankaTakip</div>
+    <nav id="nav">
+      <button data-tab="overview" class="active">Özet</button>
+      <button data-tab="statements">Ekstreler</button>
+      <button data-tab="transactions">İşlemler</button>
+      <button data-tab="settings">Tarama</button>
+    </nav>
+    <div class="user"><span id="user-email"></span><a href="/auth/logout">Çıkış</a></div>
+  </div>
+</header>
+
+<main>
+  <div id="login" class="card login" hidden>
+    <h2>BankaTakip</h2>
+    <p class="muted" id="login-msg">Devam etmek için Google hesabınızla giriş yapın.</p>
+    <a class="btn" href="/auth/login" id="login-btn">Google ile giriş yap</a>
+  </div>
+
+  <div id="flash"></div>
+
+  <section id="tab-overview" hidden>
+    <div class="grid">
+      <div class="card stat"><div class="label">Bu ay harcama</div><div class="value" id="s-this"></div><div class="sub" id="s-this-sub"></div></div>
+      <div class="card stat"><div class="label">Yaklaşan ödeme</div><div class="value" id="s-due"></div><div class="sub" id="s-due-sub"></div></div>
+      <div class="card stat"><div class="label">Ekstre sayısı</div><div class="value" id="s-count"></div><div class="sub" id="s-last-run"></div></div>
+    </div>
+    <div class="two">
+      <div class="card"><h2>Aylık harcama</h2><div class="chart-box"><canvas id="monthly-chart"></canvas></div></div>
+      <div class="card"><h2>Son ödeme tarihleri</h2><div id="upcoming"></div></div>
+    </div>
+    <div class="card" style="margin-top:14px"><h2>Bu ay kategoriler</h2><div id="cat-list"></div></div>
+  </section>
+
+  <section id="tab-statements" hidden>
+    <div class="card">
+      <h2>Ekstreler</h2>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Banka</th><th class="hide-sm">Kesim</th><th>Son ödeme</th><th class="num">Dönem borcu</th><th class="num hide-sm">Asgari</th><th class="num">İşlem</th><th class="hide-sm">Kaynak</th><th></th></tr></thead>
+        <tbody id="statements-body"></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="tab-transactions" hidden>
+    <div class="card">
+      <div class="filters">
+        <input id="f-q" type="search" placeholder="Açıklamada ara">
+        <select id="f-bank"><option value="">Tüm bankalar</option></select>
+        <select id="f-category"><option value="">Tüm kategoriler</option></select>
+        <input id="f-since" type="date" title="Başlangıç">
+        <input id="f-until" type="date" title="Bitiş">
+      </div>
+      <p class="muted" id="tx-summary"></p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Tarih</th><th class="hide-sm">Banka</th><th>Açıklama</th><th class="hide-sm">Kategori</th><th class="num">Tutar</th></tr></thead>
+        <tbody id="tx-body"></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="tab-settings" hidden>
+    <div class="grid">
+      <div class="card">
+        <h2>Mailleri tara</h2>
+        <p class="muted">Gmail ve iCloud'daki yeni ekstre maillerini bulur ve işler. Her sabah otomatik de çalışır.</p>
+        <button class="btn" id="sync-btn">Şimdi tara</button>
+        <div id="sync-result" style="margin-top:12px"></div>
+      </div>
+      <div class="card">
+        <h2>PDF yükle</h2>
+        <p class="muted">Elinizdeki bir ekstreyi doğrudan ekleyin.</p>
+        <form id="upload-form" class="row">
+          <select id="upload-bank" required></select>
+          <input type="file" id="upload-file" accept="application/pdf" required>
+          <button class="btn" type="submit">Yükle</button>
+        </form>
+        <div id="upload-result" style="margin-top:12px"></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Ayarlar</h2>
+      <dl id="settings-list"></dl>
+      <p class="muted" style="font-size:13px;margin-bottom:0">Hesaplar ve şifreler Vercel ortam değişkenlerinden okunur.</p>
+    </div>
+  </section>
+</main>
+
+<script>
+const TRY = new Intl.NumberFormat("tr-TR", { style: "currency", currency: "TRY" });
+const DATE = new Intl.DateTimeFormat("tr-TR", { day: "numeric", month: "short", year: "numeric" });
+const MONTH = new Intl.DateTimeFormat("tr-TR", { month: "short", year: "2-digit" });
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const money = (v) => (v == null ? "–" : TRY.format(v));
+const fmtDate = (s) => (s ? DATE.format(new Date(s.slice(0, 10) + "T00:00:00")) : "–");
+const PALETTE = ["#2f6f5e", "#c07a2c", "#4f6fb0", "#a8475b", "#6f8f3a", "#7c5aa6", "#3a8fa0", "#b0913a", "#8a8f8c"];
+
+let me = null, chart = null, current = "overview";
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { "X-Requested-With": "bankatakip", ...(opts.headers || {}) },
+  });
+  if (res.status === 401) { showLogin(); throw new Error("Giriş gerekli"); }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.detail || `Hata (${res.status})`);
+  return data;
+}
+
+function flash(msg, error = false) {
+  $("flash").innerHTML = msg ? `<div class="notice ${error ? "error" : ""}">${esc(msg)}</div>` : "";
+}
+
+function showLogin(msg) {
+  $("header").hidden = true;
+  document.querySelectorAll("section").forEach((s) => (s.hidden = true));
+  $("login").hidden = false;
+  if (msg) { $("login-msg").textContent = msg; $("login-btn").hidden = true; }
+}
+
+function showTab(name) {
+  current = name;
+  document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll("section").forEach((s) => (s.hidden = s.id !== "tab-" + name));
+  flash("");
+  ({ overview: loadOverview, statements: loadStatements, transactions: loadTransactions, settings: renderSettings })[name]();
+}
+
+function daysUntil(iso) {
+  const d = new Date(iso + "T00:00:00"), t = new Date(); t.setHours(0, 0, 0, 0);
+  return Math.round((d - t) / 86400000);
+}
+
+async function loadOverview() {
+  const o = await api("/api/overview");
+  $("s-this").textContent = money(o.this_month);
+  const diff = o.this_month - o.last_month;
+  $("s-this-sub").textContent = o.last_month ? `Geçen ay ${money(o.last_month)} (${diff >= 0 ? "+" : ""}${money(diff)})` : "Geçen ay veri yok";
+  const next = o.upcoming[0];
+  $("s-due").textContent = next ? money(next.period_debt) : "–";
+  $("s-due-sub").textContent = next ? `${next.bank} · ${fmtDate(next.due_date)} (${daysUntil(next.due_date)} gün)` : "Yaklaşan ödeme yok";
+  $("s-count").textContent = o.statement_count;
+  $("s-last-run").textContent = o.last_run ? "Son tarama: " + new Date(o.last_run).toLocaleString("tr-TR") : "Henüz tarama yapılmadı";
+
+  $("upcoming").innerHTML = o.upcoming.length ? o.upcoming.map((s) => {
+    const d = daysUntil(s.due_date), cls = d <= 3 ? "soon" : d <= 7 ? "near" : "";
+    return `<div class="due"><div><strong>${esc(s.bank)}</strong><div class="muted" style="font-size:13px">${fmtDate(s.due_date)} · asgari ${money(s.minimum_payment)}</div></div>
+      <div style="text-align:right"><div class="num">${money(s.period_debt)}</div><span class="pill ${cls}">${d === 0 ? "bugün" : d + " gün"}</span></div></div>`;
+  }).join("") : `<div class="empty">Yaklaşan ödeme yok</div>`;
+
+  const cats = Object.entries(o.this_month_by_category).sort((a, b) => b[1] - a[1]);
+  const total = cats.reduce((s, [, v]) => s + v, 0);
+  $("cat-list").innerHTML = cats.length ? `<table><tbody>${cats.map(([c, v]) =>
+    `<tr><td>${esc(c)}</td><td class="num muted">%${Math.round((v / total) * 100)}</td><td class="num">${money(v)}</td></tr>`).join("")}</tbody></table>`
+    : `<div class="empty">Bu ay henüz harcama yok</div>`;
+
+  drawChart(o.monthly);
+}
+
+function drawChart(monthly) {
+  const categories = [...new Set(monthly.flatMap((m) => Object.keys(m.categories)))];
+  const totals = Object.fromEntries(categories.map((c) => [c, monthly.reduce((s, m) => s + (m.categories[c] || 0), 0)]));
+  categories.sort((a, b) => totals[b] - totals[a]);
+  const css = getComputedStyle(document.documentElement);
+  const muted = css.getPropertyValue("--muted").trim(), border = css.getPropertyValue("--border").trim();
+  if (chart) chart.destroy();
+  if (!window.Chart || !monthly.length) return;
+  chart = new Chart($("monthly-chart"), {
+    type: "bar",
+    data: {
+      labels: monthly.map((m) => MONTH.format(new Date(m.month + "-01T00:00:00"))),
+      datasets: categories.map((c, i) => ({
+        label: c, data: monthly.map((m) => m.categories[c] || 0),
+        backgroundColor: PALETTE[i % PALETTE.length], borderRadius: 3, maxBarThickness: 36,
+      })),
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: {
+        legend: { position: "bottom", labels: { color: muted, boxWidth: 10, boxHeight: 10 } },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${money(c.raw)}` } },
+      },
+      scales: {
+        x: { stacked: true, grid: { display: false }, ticks: { color: muted } },
+        y: { stacked: true, grid: { color: border }, ticks: { color: muted, callback: (v) => TRY.format(v).replace(/,00$/, "") } },
+      },
+    },
+  });
+}
+
+async function loadStatements() {
+  const rows = await api("/api/statements");
+  $("statements-body").innerHTML = rows.length ? rows.map((s) => `<tr>
+    <td>${esc(s.bank)}</td><td class="hide-sm">${fmtDate(s.statement_date)}</td><td>${fmtDate(s.due_date)}</td>
+    <td class="num">${money(s.period_debt)}</td><td class="num hide-sm">${money(s.minimum_payment)}</td>
+    <td class="num"><a href="#" data-statement="${s.id}">${s.tx_count}</a></td>
+    <td class="muted hide-sm">${esc(s.source)}</td>
+    <td><button class="btn link" data-delete="${s.id}">Sil</button></td></tr>`).join("")
+    : `<tr><td colspan="8" class="empty">Henüz ekstre yok. Senkronizasyon sekmesinden mailleri tarayın.</td></tr>`;
+}
+
+$("statements-body").addEventListener("click", async (e) => {
+  const del = e.target.closest("[data-delete]"), open = e.target.closest("[data-statement]");
+  if (open) { e.preventDefault(); txStatement = open.dataset.statement; showTab("transactions"); }
+  if (del && confirm("Bu ekstre ve işlemleri silinsin mi? Aynı PDF tekrar yüklenebilir.")) {
+    try { await api(`/api/statements/${del.dataset.delete}`, { method: "DELETE" }); loadStatements(); }
+    catch (err) { flash(err.message, true); }
+  }
+});
+
+let txStatement = null, txTimer = null;
+async function loadTransactions() {
+  const p = new URLSearchParams();
+  for (const [k, id] of [["q", "f-q"], ["bank", "f-bank"], ["category", "f-category"], ["since", "f-since"], ["until", "f-until"]])
+    if ($(id).value) p.set(k, $(id).value);
+  if (txStatement) p.set("statement_id", txStatement);
+  const rows = await api("/api/transactions?" + p);
+  const spend = rows.filter((r) => r.amount > 0).reduce((s, r) => s + r.amount, 0);
+  $("tx-summary").innerHTML = `${rows.length} işlem · harcama toplamı ${money(spend)}` +
+    (txStatement ? ` · <a href="#" id="clear-statement">tek ekstre gösteriliyor, filtreyi kaldır</a>` : "");
+  const opts = me.categories.map((c) => `<option>${esc(c)}</option>`).join("");
+  $("tx-body").innerHTML = rows.length ? rows.map((r) => `<tr>
+    <td>${fmtDate(r.date)}</td><td class="muted hide-sm">${esc(r.bank)}</td><td class="desc">${esc(r.description)}<select class="inline show-sm" data-tx="${r.id}">${opts}</select></td>
+    <td class="hide-sm"><select class="inline" data-tx="${r.id}">${opts}</select></td>
+    <td class="num ${r.amount < 0 ? "neg" : ""}">${money(r.amount)}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="empty">İşlem bulunamadı</td></tr>`;
+  rows.forEach((r) => document.querySelectorAll(`[data-tx="${r.id}"]`).forEach((s) => (s.value = r.category || "Diğer")));
+}
+
+$("tx-summary").addEventListener("click", (e) => {
+  if (e.target.id === "clear-statement") { e.preventDefault(); txStatement = null; loadTransactions(); }
+});
+["f-bank", "f-category", "f-since", "f-until"].forEach((id) => $(id).addEventListener("change", loadTransactions));
+$("f-q").addEventListener("input", () => { clearTimeout(txTimer); txTimer = setTimeout(loadTransactions, 300); });
+$("tx-body").addEventListener("change", async (e) => {
+  const sel = e.target.closest("[data-tx]");
+  if (!sel) return;
+  document.querySelectorAll(`[data-tx="${sel.dataset.tx}"]`).forEach((s) => (s.value = sel.value));
+  try {
+    await api(`/api/transactions/${sel.dataset.tx}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category: sel.value }),
+    });
+  } catch (err) { flash(err.message, true); }
+});
+
+function renderSettings() {
+  const accounts = me.accounts.length ? me.accounts.map((a) => `${esc(a.name)}: ${esc(a.email)}`).join("<br>")
+    : `<span style="color:var(--danger)">Tanımlı değil (GMAIL_EMAIL / ICLOUD_EMAIL)</span>`;
+  const banks = me.banks.map((b) => `${esc(b.name)} <span class="muted">(${b.has_pdf_password ? "PDF şifresi var" : "PDF şifresi yok"})</span>`).join("<br>");
+  $("settings-list").innerHTML = `<dt>Mail hesapları</dt><dd>${accounts}</dd><dt>Bankalar</dt><dd>${banks}</dd>
+    <dt>Kategoriler</dt><dd>${me.categories.map(esc).join(", ")}</dd>`;
+}
+
+$("sync-btn").addEventListener("click", async () => {
+  const btn = $("sync-btn");
+  btn.disabled = true; btn.textContent = "Taranıyor…"; $("sync-result").innerHTML = "";
+  try {
+    const r = await api("/api/sync", { method: "POST" });
+    $("sync-result").innerHTML = `<div class="notice">${r.mails_checked} mail kontrol edildi, ${r.statements_added} yeni ekstre, ${r.transactions_added} işlem eklendi.` +
+      (r.incomplete ? `<br><strong>Süre doldu, kalanlar için tekrar "Şimdi tara"ya basın.</strong>` : "") +
+      (r.errors.length ? `<ul>${r.errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : "") + `</div>`;
+  } catch (err) {
+    $("sync-result").innerHTML = `<div class="notice error">${esc(err.message)}</div>`;
+  } finally { btn.disabled = false; btn.textContent = "Şimdi tara"; }
+});
+
+$("upload-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData();
+  fd.append("bank", $("upload-bank").value);
+  fd.append("file", $("upload-file").files[0]);
+  try {
+    const r = await api("/api/import", { method: "POST", body: fd });
+    $("upload-result").innerHTML = `<div class="notice">${r.duplicate ? "Bu ekstre zaten kayıtlı." : `Eklendi: ${r.transactions} işlem.`}</div>`;
+    $("upload-form").reset();
+  } catch (err) {
+    $("upload-result").innerHTML = `<div class="notice error">${esc(err.message)}</div>`;
+  }
+});
+
+$("nav").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { txStatement = null; showTab(b.dataset.tab); } });
+
+(async function init() {
+  try {
+    const res = await fetch("/api/me");
+    if (res.status === 401) return showLogin();
+    const data = await res.json();
+    if (!res.ok) return showLogin(data.detail || "Sunucu hatası");
+    me = data;
+  } catch { return showLogin("Sunucuya ulaşılamadı."); }
+  $("header").hidden = false;
+  $("user-email").textContent = me.email;
+  const bankOpts = me.banks.map((b) => `<option>${esc(b.name)}</option>`).join("");
+  $("f-bank").innerHTML += bankOpts;
+  $("upload-bank").innerHTML = bankOpts;
+  $("f-category").innerHTML += me.categories.map((c) => `<option>${esc(c)}</option>`).join("");
+  showTab("overview");
+})();
+</script>
+</body>
+</html>

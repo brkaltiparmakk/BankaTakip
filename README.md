@@ -14,18 +14,71 @@ Gmail / iCloud (IMAP)
   Ayrıştırıcı (tarih, açıklama, tutar, dönem borcu, son ödeme tarihi)
         │  anahtar kelimeyle otomatik kategori
         ▼
-  SQLite (data/bankatakip.db) ──► CLI: statements / list / summary
+  SQLite (yerel) veya Neon Postgres (Vercel)
+        │
+        ├──► Web paneli (Google ile giriş, grafikler, son ödeme tarihleri)
+        └──► CLI: statements / list / summary
 ```
 
-## Kurulum
+## Vercel'e kurulum (web paneli)
+
+Panel Vercel'de çalışır; veriler Neon Postgres'te durur, mailler her sabah otomatik taranır.
+Panele sadece izin verdiğiniz Google hesaplarıyla girilebilir.
+
+### 1. Projeyi Vercel'e bağlayın
+[vercel.com/new](https://vercel.com/new) → bu GitHub deposunu seçin → Framework: **Other** → Deploy.
+(İlk deploy ortam değişkenleri olmadığı için panelde "Giriş ayarlanmamış" gösterir; normal.)
+
+### 2. Veritabanı (Neon)
+Vercel projesi → **Storage** → **Create Database** → **Neon** → projeye bağlayın.
+Bu, `DATABASE_URL` değişkenini otomatik ekler. Tablolar ilk istekte kendiliğinden oluşur.
+
+### 3. Google ile giriş
+1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials) → yeni proje →
+   **OAuth consent screen**: External, uygulama adı "BankaTakip", test kullanıcısı olarak kendi adresiniz.
+2. **Credentials → Create credentials → OAuth client ID** → Web application.
+3. **Authorized redirect URIs**: `https://<proje-adınız>.vercel.app/auth/callback`
+4. Oluşan Client ID ve Client Secret'ı bir sonraki adımda kullanın.
+
+### 4. Ortam değişkenleri
+Vercel projesi → **Settings → Environment Variables** (tam liste `.env.example` içinde):
+
+| Değişken | Değer |
+|---|---|
+| `GMAIL_EMAIL`, `GMAIL_APP_PASSWORD` | Gmail adresi ve uygulama şifresi |
+| `ICLOUD_EMAIL`, `ICLOUD_APP_PASSWORD` | iCloud adresi ve uygulamaya özel parola |
+| `GARANTI_PDF_PASSWORD` vb. | Şifreli ekstreler için PDF şifreleri |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | 3. adımdan |
+| `SESSION_SECRET` | En az 32 karakterlik rastgele metin |
+| `ALLOWED_EMAILS` | Panele girebilecek Google adres(ler)i |
+| `CRON_SECRET` | Rastgele bir metin (otomatik taramayı korur) |
+| `APP_URL` | İsteğe bağlı, ör. `https://bankatakip.vercel.app` |
+
+Değişkenleri ekledikten sonra **Deployments → Redeploy** yapın.
+
+### 5. Kullanım
+- Panele girip **Tarama → Şimdi tara**'ya basın. İlk taramada bir yıllık mail varsa süre sınırı
+  nedeniyle birkaç kez basmanız gerekebilir; her seferinde kaldığı yerden devam eder.
+- Sonrasında `vercel.json`'daki cron her gün 09:00'da (TR) yeni ekstreleri kendisi çeker.
+- Banka listesini veya kategorileri değiştirmek için `BANKATAKIP_CONFIG` değişkenine
+  `config.example.yaml` biçiminde YAML yazabilirsiniz; yoksa varsayılanlar kullanılır.
+
+### Güvenlik notları
+- Mail uygulama şifreleri yalnızca Vercel ortam değişkenlerinde durur, veritabanına yazılmaz.
+  Uygulama maillere salt okunur bağlanır.
+- `ALLOWED_EMAILS` dışındaki hiçbir hesap panele giremez; giriş ayarları eksikse API tüm
+  isteklere kapalıdır.
+- Uygulama şifresini iptal etmek isterseniz Google/Apple hesabınızdan tek tıkla silebilirsiniz.
+
+## Yerelde kurulum
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-cp config.example.yaml config.yaml   # mail adreslerinizi ve bankalarınızı yazın
-cp .env.example .env                 # şifreleri yazın
+cp .env.example .env                 # mail adresleri ve şifreler
+cp config.example.yaml config.yaml   # isteğe bağlı: banka/kategori listesini özelleştirmek için
 ```
 
 ### Mail erişimi (uygulama şifresi)
@@ -76,6 +129,13 @@ alanlarını da bulur. Bir bankanın ekstresi bu yapıya uymuyorsa:
 
 Tutarlarda işaret: pozitif = harcama, negatif = ödeme/iade (`2.000,00+` veya `-2.000,00`).
 
+## Paneli yerelde çalıştırma
+
+```bash
+pip install -r requirements-dev.txt
+AUTH_DISABLED=1 uvicorn bankatakip.web.app:app --reload   # http://localhost:8000
+```
+
 ## Geliştirme
 
 ```bash
@@ -83,5 +143,6 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
+Postgres testleri için: `TEST_DATABASE_URL=postgresql://... python -m pytest`.
 Testler gerçek mail sunucusu kullanmaz; örnek (şifreli/şifresiz) ekstre PDF'leri üretip tüm
 akışı sahte bir IMAP istemcisiyle dener.
