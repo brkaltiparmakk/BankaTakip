@@ -22,6 +22,12 @@ Gmail / iCloud (IMAP)
 
 ## Vercel'e kurulum (web paneli)
 
+> **Mevcut kurulum:** Vercel projesi (`bankatakip`, bölge fra1) ve Neon veritabanı (`bankatakip`,
+> Frankfurt) oluşturuldu; `DATABASE_URL`, `SESSION_SECRET`, `CRON_SECRET`, `PANEL_PASSWORD` ve
+> `ALLOWED_EMAILS` tanımlı. Vercel hesabında GitHub bağlantısı olmadığı için deploy, belirli bir
+> commit'in arşivinden `pip` ile kuruluyor. Vercel → Project → **Settings → Git** üzerinden bu
+> depoyu bağladığınızda sonraki her push otomatik deploy edilir.
+
 Panel Vercel'de çalışır; veriler Neon Postgres'te durur, mailler her sabah otomatik taranır.
 Panele sadece izin verdiğiniz Google hesaplarıyla veya belirlediğiniz panel şifresiyle girilebilir.
 
