@@ -5,13 +5,15 @@ Yerelde:  AUTH_DISABLED=1 uvicorn bankatakip.web.app:app --reload
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 from collections.abc import Iterator
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -283,6 +285,54 @@ def update_account(account_id: int, body: AccountUpdate, user: str = User,
     if not name or not storage.rename_account(account_id, name):
         raise HTTPException(404, "Hesap bulunamadı.")
     return {"ok": True}
+
+
+MONTH_RE = r"^\d{4}-(0[1-9]|1[0-2])$"
+
+
+def _jsonable(value):
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_jsonable(v) for v in value]
+    return value
+
+
+@app.get("/api/report")
+def report(month: str | None = Query(None, pattern=MONTH_RE), user: str = User,
+           storage: Storage = Depends(get_storage)):
+    if month is None:
+        months = [m for m, _, _ in storage.monthly_summary()]
+        month = max(months) if months else date.today().strftime("%Y-%m")
+    return _jsonable(storage.report(month))
+
+
+@app.get("/api/report/trend")
+def report_trend(category: str, month: str = Query(..., pattern=MONTH_RE), user: str = User,
+                 storage: Storage = Depends(get_storage)):
+    return _jsonable(storage.category_trend(category, month))
+
+
+@app.get("/api/export.csv")
+def export_csv(month: str | None = Query(None, pattern=MONTH_RE), user: str = User,
+               storage: Storage = Depends(get_storage)):
+    """İşlemleri Excel'in doğru açacağı biçimde CSV olarak indirir (noktalı virgül, UTF-8 BOM)."""
+    since = until = None
+    if month:
+        year, mon = (int(x) for x in month.split("-"))
+        since = date(year, mon, 1)
+        until = date(year + mon // 12, mon % 12 + 1, 1) - timedelta(days=1)
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";")
+    writer.writerow(["Tarih", "Banka", "Açıklama", "Kategori", "Tutar"])
+    for r in storage.list_transactions(since=since, until=until):
+        writer.writerow([r["date"], r["bank"], r["description"], r["category"] or "Diğer",
+                         str(Decimal(r["amount"])).replace(".", ",")])
+    name = f"bankatakip-{month or 'tum'}.csv"
+    return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @app.get("/api/mail-log")

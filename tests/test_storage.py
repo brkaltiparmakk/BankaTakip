@@ -88,3 +88,45 @@ def test_schema_comments_have_no_statement_separator():
     import re
     from bankatakip.storage import _TABLES
     assert not any(";" in c for c in re.findall(r"--[^\n]*", _TABLES))
+
+
+def _spend_statement(month, items, bank="Banka A"):
+    return ParsedStatement(
+        bank=bank,
+        summary=StatementSummary(),
+        transactions=[Transaction(date(2026, month, day), desc, Decimal(amount), cat) for day, desc, amount, cat in items],
+    )
+
+
+def test_report(storage):
+    storage.save_statement(_spend_statement(6, [(5, "MIGROS", "300", "Market")]), "h6", source="gmail")
+    storage.save_statement(_spend_statement(7, [(5, "MIGROS", "100", "Market")]), "h7", source="gmail")
+    storage.save_statement(_spend_statement(8, [
+        (1, "MIGROS", "150", "Market"),
+        (2, "MIGROS IADE", "-50", "Market"),          # iade harcamadan düşülür
+        (3, "SHELL", "400", "Akaryakıt"),
+        (3, "KART ODEMESI", "-1000", "Kart Ödemesi"),  # harcama sayılmaz
+        (4, "ABC LTD", "90", None),
+    ]), "h8", source="gmail")
+
+    r = storage.report("2026-08")
+    assert r["months"] == ["2026-06", "2026-07", "2026-08"]
+    k = r["kpi"]
+    assert k["spend"] == Decimal("590") and k["spend_prev"] == Decimal("100")
+    assert k["spend_avg3"] == Decimal("200") and k["prev_month"] == "2026-07"
+    assert k["daily_avg"] == Decimal("590") / 31
+    cats = {c["name"]: c for c in r["categories"]}
+    assert list(cats) == ["Akaryakıt", "Market", "Diğer"]
+    assert cats["Market"]["total"] == Decimal("100") and cats["Market"]["count"] == 2
+    assert cats["Market"]["prev"] == Decimal("100") and cats["Market"]["avg3"] == Decimal("200")
+    assert cats["Akaryakıt"]["prev"] == 0
+    assert r["merchants"][0]["description"] == "SHELL"
+    assert {d["date"]: d["total"] for d in r["daily"]}["2026-08-03"] == Decimal("400")
+    assert r["pivot"]["months"] == ["2026-06", "2026-07", "2026-08"]
+    market = next(row for row in r["pivot"]["rows"] if row["name"] == "Market")
+    assert market["values"] == [Decimal("300"), Decimal("100"), Decimal("100")]
+
+    trend = storage.category_trend("Market", "2026-08", count=3)
+    assert trend == [{"month": "2026-06", "total": Decimal("300")}, {"month": "2026-07", "total": Decimal("100")},
+                     {"month": "2026-08", "total": Decimal("100")}]
+    assert storage.category_trend("Diğer", "2026-08", count=1) == [{"month": "2026-08", "total": Decimal("90")}]

@@ -157,3 +157,21 @@ def test_google_session_rejected_when_google_disabled(client, monkeypatch):
     monkeypatch.setenv("ALLOWED_EMAILS", "ben@gmail.com")
     client.cookies.set(auth.SESSION_COOKIE, auth.sign_session("ben@gmail.com"))
     assert client.get("/api/me").status_code == 401
+
+
+def test_report_endpoints(client, monkeypatch):
+    monkeypatch.setenv("AUTH_DISABLED", "1")
+    assert client.get("/api/report").json()["categories"] == []
+    files = {"file": ("ekstre.pdf", make_pdf(SAMPLE_LINES), "application/pdf")}
+    assert client.post("/api/import", data={"bank": "Garanti BBVA"}, files=files, headers=H).status_code == 200
+
+    r = client.get("/api/report").json()
+    assert r["month"] == r["months"][-1] and r["kpi"]["spend"] > 0 and r["categories"]
+    assert client.get("/api/report?month=2026-13").status_code == 422
+    cat = r["categories"][0]["name"]
+    trend = client.get("/api/report/trend", params={"category": cat, "month": r["month"]}).json()
+    assert len(trend) == 12 and trend[-1]["month"] == r["month"] and trend[-1]["total"] > 0
+
+    csv_resp = client.get(f"/api/export.csv?month={r['month']}")
+    assert csv_resp.status_code == 200 and "text/csv" in csv_resp.headers["content-type"]
+    assert csv_resp.content.startswith("﻿".encode()) and "Tarih;" in csv_resp.text

@@ -11,12 +11,16 @@
   --bg: #f6f5f1; --surface: #ffffff; --surface-2: #efede7; --text: #1d2321; --muted: #69706d;
   --border: #dedbd2; --accent: #2f6f5e; --accent-text: #ffffff; --danger: #b3452f; --warn: #a86a12;
   --positive: #2f7a45; --shadow: 0 1px 2px rgba(0,0,0,.05);
+  --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100; --c5: #e87ba4; --c6: #008300; --c7: #4a3aa7;
+  --c-other: #a3a29c; --seq: #2a78d6;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #141816; --surface: #1c211f; --surface-2: #252b28; --text: #e8ebe9; --muted: #9aa39f;
     --border: #313935; --accent: #6fbfa6; --accent-text: #0f1a16; --danger: #e5836e; --warn: #e0a64c;
     --positive: #7fcf94; --shadow: none;
+    --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #d55181; --c6: #008300; --c7: #9085e9;
+    --c-other: #6b6a65; --seq: #3987e5;
   }
 }
 * { box-sizing: border-box; }
@@ -75,6 +79,26 @@ dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margi
 dt { color: var(--muted); }
 dd { margin: 0; overflow-wrap: anywhere; }
 .show-sm { display: none; }
+.report-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.report-bar strong { font-size: 18px; min-width: 150px; text-align: center; }
+.report-bar .spacer { flex: 1; }
+.icon-btn { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; width: 34px; height: 34px; cursor: pointer; font-size: 18px; line-height: 1; }
+.icon-btn:disabled { opacity: .4; cursor: default; }
+.bars { display: grid; gap: 4px; }
+.bar-row { display: grid; grid-template-columns: minmax(90px, 160px) 1fr auto; gap: 10px; align-items: center; padding: 6px 4px; border-radius: 8px; cursor: pointer; }
+.bar-row:hover, .bar-row.active { background: var(--surface-2); }
+.bar-name { display: flex; align-items: center; gap: 7px; font-size: 14px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.dot { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+.bar-track { height: 10px; background: var(--surface-2); border-radius: 5px; overflow: hidden; }
+.bar-fill { height: 100%; background: var(--seq); border-radius: 5px; }
+.bar-val { text-align: right; font-variant-numeric: tabular-nums; font-size: 14px; white-space: nowrap; }
+.delta { font-size: 12px; color: var(--muted); }
+.delta.up { color: var(--danger); }
+.delta.down { color: var(--positive); }
+.heat td { text-align: right; font-variant-numeric: tabular-nums; font-size: 13px; }
+.heat td:first-child { text-align: left; }
+.heat td.cell { border-bottom: 2px solid var(--surface); }
+.heat th:first-child, .heat td:first-child { position: sticky; left: 0; background: var(--surface); z-index: 1; }
 [hidden] { display: none !important; }
 @media (max-width: 640px) {
   .bar { gap: 6px 12px; padding-bottom: 6px; }
@@ -88,6 +112,12 @@ dd { margin: 0; overflow-wrap: anywhere; }
   td.num { white-space: nowrap; }
   td.desc { min-width: 0; }
   .card { padding: 12px; }
+  #rep-kpis { grid-template-columns: 1fr 1fr; gap: 10px; }
+  #rep-kpis .value { font-size: 19px; }
+  .report-bar strong { min-width: 0; }
+  .bar-row { grid-template-columns: 1fr auto; gap: 2px 10px; }
+  .bar-row > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+  .bar-val { display: flex; gap: 8px; align-items: baseline; }
 }
 </style>
 </head>
@@ -97,6 +127,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
     <div class="brand"><span>₺</span>BankaTakip</div>
     <nav id="nav">
       <button data-tab="overview" class="active">Özet</button>
+      <button data-tab="reports">Raporlar</button>
       <button data-tab="accounts">Hesaplar</button>
       <button data-tab="statements">Ekstreler</button>
       <button data-tab="transactions">İşlemler</button>
@@ -134,6 +165,35 @@ dd { margin: 0; overflow-wrap: anywhere; }
       <div class="card"><h2>Son ödeme tarihleri</h2><div id="upcoming"></div></div>
     </div>
     <div class="card" style="margin-top:14px"><h2>Bu ay kategoriler</h2><div id="cat-list"></div></div>
+  </section>
+
+  <section id="tab-reports" hidden>
+    <div class="report-bar">
+      <button class="icon-btn" id="rep-prev" aria-label="Önceki ay">‹</button>
+      <strong id="rep-month"></strong>
+      <button class="icon-btn" id="rep-next" aria-label="Sonraki ay">›</button>
+      <span class="spacer"></span>
+      <a class="btn ghost" id="rep-csv" href="#" download>CSV indir</a>
+    </div>
+    <div class="grid" id="rep-kpis"></div>
+    <div class="two">
+      <div class="card"><h2>Kategoriler</h2><p class="muted" style="font-size:13px;margin-top:-6px">Ayrıntı için bir kategoriye tıklayın. Transferler ve kart ödemeleri dahil değil.</p><div class="bars" id="rep-cats"></div></div>
+      <div class="card"><h2>En çok harcanan yerler</h2><div id="rep-merchants"></div></div>
+    </div>
+    <div class="card" id="rep-detail" style="margin-top:14px" hidden>
+      <div class="row" style="justify-content:space-between"><h2 id="rep-detail-title" style="margin:0"></h2><button class="btn link" style="color:var(--muted)" id="rep-detail-close">Kapat ✕</button></div>
+      <p class="muted" style="font-size:13px" id="rep-detail-sub"></p>
+      <div class="chart-box" style="height:200px"><canvas id="rep-trend"></canvas></div>
+      <div class="table-wrap" style="margin-top:12px"><table><thead><tr><th>Tarih</th><th>Açıklama</th><th class="hide-sm">Banka</th><th class="num">Tutar</th></tr></thead><tbody id="rep-detail-tx"></tbody></table></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>Son 6 ay · kategori tablosu</h2>
+      <div class="table-wrap"><table class="heat" id="rep-pivot"></table></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>Günlük harcama</h2>
+      <div class="chart-box" style="height:200px"><canvas id="rep-daily"></canvas></div>
+    </div>
   </section>
 
   <section id="tab-accounts" hidden>
@@ -218,7 +278,6 @@ const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const money = (v) => (v == null ? "–" : TRY.format(v));
 const fmtDate = (s) => (s ? DATE.format(new Date(s.slice(0, 10) + "T00:00:00")) : "–");
-const PALETTE = ["#2f6f5e", "#c07a2c", "#4f6fb0", "#a8475b", "#6f8f3a", "#7c5aa6", "#3a8fa0", "#b0913a", "#8a8f8c"];
 
 let me = null, chart = null, current = "overview";
 
@@ -273,7 +332,7 @@ function showTab(name) {
   document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll("section").forEach((s) => (s.hidden = s.id !== "tab-" + name));
   flash("");
-  ({ overview: loadOverview, accounts: loadAccounts, statements: loadStatements, transactions: loadTransactions, settings: renderSettings })[name]();
+  ({ overview: loadOverview, reports: loadReport, accounts: loadAccounts, statements: loadStatements, transactions: loadTransactions, settings: renderSettings })[name]();
 }
 
 function daysUntil(iso) {
@@ -300,8 +359,9 @@ async function loadOverview() {
 
   const cats = Object.entries(o.this_month_by_category).sort((a, b) => b[1] - a[1]);
   const total = cats.reduce((s, [, v]) => s + v, 0);
+  assignCategoryColors(o.monthly);
   $("cat-list").innerHTML = cats.length ? `<table><tbody>${cats.map(([c, v]) =>
-    `<tr><td>${esc(c)}</td><td class="num muted">%${Math.round((v / total) * 100)}</td><td class="num">${money(v)}</td></tr>`).join("")}</tbody></table>`
+    `<tr><td><span class="bar-name"><span class="dot" style="background:${colorOf(c)}"></span>${esc(c)}</span></td><td class="num muted">%${Math.round((v / total) * 100)}</td><td class="num">${money(v)}</td></tr>`).join("")}</tbody></table>`
     : `<div class="empty">Bu ay henüz harcama yok</div>`;
 
   drawChart(o.monthly);
@@ -391,28 +451,46 @@ $("accounts-grid").addEventListener("click", async (e) => {
   } catch (err) { flash(err.message, true); }
 });
 
+// Kategorik renkler: renk körlüğüne göre doğrulanmış sabit sıralı 7 renk; kalan kategoriler "Diğer" (gri).
+// Renk kategoriye bağlıdır (son 12 aydaki toplam sırası), ay değiştikçe değişmez.
+const SLOTS = ["--c1", "--c2", "--c3", "--c4", "--c5", "--c6", "--c7"];
+let catColor = {};
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function colorOf(cat) { return catColor[cat] ? cssVar(catColor[cat]) : cssVar("--c-other"); }
+
+function assignCategoryColors(monthly) {
+  const totals = {};
+  monthly.forEach((m) => Object.entries(m.categories).forEach(([c, v]) => (totals[c] = (totals[c] || 0) + v)));
+  const ranked = Object.keys(totals).filter((c) => c !== "Diğer").sort((a, b) => totals[b] - totals[a]);
+  catColor = Object.fromEntries(ranked.slice(0, SLOTS.length).map((c, i) => [c, SLOTS[i]]));
+  return ranked;
+}
+
 function drawChart(monthly) {
-  const categories = [...new Set(monthly.flatMap((m) => Object.keys(m.categories)))];
-  const totals = Object.fromEntries(categories.map((c) => [c, monthly.reduce((s, m) => s + (m.categories[c] || 0), 0)]));
-  categories.sort((a, b) => totals[b] - totals[a]);
-  const css = getComputedStyle(document.documentElement);
-  const muted = css.getPropertyValue("--muted").trim(), border = css.getPropertyValue("--border").trim();
+  const ranked = assignCategoryColors(monthly);
+  const shown = ranked.slice(0, SLOTS.length);
+  const series = shown.map((c) => ({ label: c, data: monthly.map((m) => m.categories[c] || 0), color: colorOf(c) }));
+  const rest = monthly.map((m) => Object.entries(m.categories).filter(([c]) => !shown.includes(c)).reduce((s, [, v]) => s + v, 0));
+  if (rest.some((v) => v > 0)) series.push({ label: "Diğer", data: rest, color: cssVar("--c-other") });
+  const muted = cssVar("--muted"), border = cssVar("--border"), surface = cssVar("--surface");
   if (chart) chart.destroy();
   if (!window.Chart || !monthly.length) return;
   chart = new Chart($("monthly-chart"), {
     type: "bar",
     data: {
       labels: monthly.map((m) => MONTH.format(new Date(m.month + "-01T00:00:00"))),
-      datasets: categories.map((c, i) => ({
-        label: c, data: monthly.map((m) => m.categories[c] || 0),
-        backgroundColor: PALETTE[i % PALETTE.length], borderRadius: 3, maxBarThickness: 36,
+      datasets: series.map((d) => ({
+        label: d.label, data: d.data, backgroundColor: d.color,
+        borderColor: surface, borderWidth: { top: 2, bottom: 0, left: 0, right: 0 }, borderSkipped: false,
+        borderRadius: 3, maxBarThickness: 36,
       })),
     },
     options: {
       maintainAspectRatio: false,
+      interaction: { mode: "index", intersect: false },
       plugins: {
         legend: { position: "bottom", labels: { color: muted, boxWidth: 10, boxHeight: 10 } },
-        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${money(c.raw)}` } },
+        tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${money(c.raw)}` }, filter: (i) => i.raw > 0 },
       },
       scales: {
         x: { stacked: true, grid: { display: false }, ticks: { color: muted } },
@@ -421,6 +499,129 @@ function drawChart(monthly) {
     },
   });
 }
+
+// ---- Raporlar ----
+const MONTH_LONG = new Intl.DateTimeFormat("tr-TR", { month: "long", year: "numeric" });
+const PCT = new Intl.NumberFormat("tr-TR", { style: "percent", maximumFractionDigits: 0 });
+let report = null, repMonth = null, repCategory = null, trendChart = null, dailyChart = null;
+const monthLabel = (m) => MONTH_LONG.format(new Date(m + "-01T00:00:00"));
+
+function deltaHtml(cur, base, label) {
+  if (base == null || base === 0) return `<span class="delta">${label}: –</span>`;
+  const d = (cur - base) / base;
+  const cls = Math.abs(d) < 0.005 ? "" : d > 0 ? "up" : "down";
+  const arrow = cls === "up" ? "▲" : cls === "down" ? "▼" : "•";
+  return `<span class="delta ${cls}">${arrow} ${PCT.format(Math.abs(d))} ${label}</span>`;
+}
+
+async function loadReport(month) {
+  try { if (!Object.keys(catColor).length) assignCategoryColors((await api("/api/overview")).monthly); } catch {}
+  report = await api("/api/report" + (month || repMonth ? `?month=${month || repMonth}` : ""));
+  repMonth = report.month;
+  const i = report.months.indexOf(repMonth);
+  $("rep-month").textContent = monthLabel(repMonth);
+  $("rep-prev").disabled = i <= 0;
+  $("rep-next").disabled = i === -1 || i >= report.months.length - 1;
+  $("rep-csv").href = `/api/export.csv?month=${repMonth}`;
+  $("rep-csv").setAttribute("download", `bankatakip-${repMonth}.csv`);
+
+  const k = report.kpi;
+  const net = k.income - k.spend;
+  $("rep-kpis").innerHTML = [
+    ["Toplam harcama", money(k.spend), `${deltaHtml(k.spend, k.spend_prev, "geçen aya göre")}<br>${deltaHtml(k.spend, k.spend_avg3, "3 ay ortalamasına göre")}`],
+    ["Hesaplara gelen", money(k.income), `<span class="delta">maaş ve hesaba girişler</span>`],
+    ["Net", `<span class="${net >= 0 ? "neg" : ""}">${net >= 0 ? "+" : ""}${money(net)}</span>`, `<span class="delta">gelen − harcama</span>`],
+    ["Günlük ortalama", money(k.daily_avg), `<span class="delta">${k.tx_count} harcama işlemi</span>`],
+  ].map(([l, v, sub]) => `<div class="card stat"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`).join("");
+
+  const max = Math.max(...report.categories.map((c) => c.total), 1);
+  $("rep-cats").innerHTML = report.categories.length ? report.categories.map((c) => `
+    <div class="bar-row ${c.name === repCategory ? "active" : ""}" data-cat="${esc(c.name)}" title="${esc(c.name)}: ${money(c.total)}">
+      <div class="bar-name"><span class="dot" style="background:${colorOf(c.name)}"></span>${esc(c.name)}</div>
+      <div><div class="bar-track"><div class="bar-fill" style="width:${(c.total / max) * 100}%"></div></div>
+        <div>${deltaHtml(c.total, c.prev, "geçen aya göre")} <span class="delta">· ${c.count} işlem</span></div></div>
+      <div class="bar-val">${money(c.total)}<div class="delta">${PCT.format(c.share)}</div></div>
+    </div>`).join("") : `<div class="empty">Bu ay harcama yok</div>`;
+
+  $("rep-merchants").innerHTML = report.merchants.length ? `<table><tbody>${report.merchants.map((m, n) => `
+    <tr><td class="muted" style="width:24px">${n + 1}</td><td class="desc">${esc(m.description)}<div class="delta">${esc(m.category)} · ${m.count} işlem</div></td>
+    <td class="num">${money(m.total)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty">–</div>`;
+
+  drawPivot(report.pivot);
+  drawDaily(report.daily);
+  if (repCategory && report.categories.some((c) => c.name === repCategory)) showCategory(repCategory);
+  else { repCategory = null; $("rep-detail").hidden = true; }
+}
+
+function drawPivot(pivot) {
+  const max = Math.max(...pivot.rows.flatMap((r) => r.values), 1);
+  const head = `<thead><tr><th>Kategori</th>${pivot.months.map((m) => `<th class="num">${MONTH.format(new Date(m + "-01T00:00:00"))}</th>`).join("")}<th class="num hide-sm">Toplam</th></tr></thead>`;
+  const body = pivot.rows.map((r) => `<tr><td><span class="bar-name"><span class="dot" style="background:${colorOf(r.name)}"></span>${esc(r.name)}</span></td>${
+    r.values.map((v, i) => {
+      const t = v / max;  // tek renkli sıralı ölçek: tutar arttıkça koyulaşır
+      const bg = v ? `background:color-mix(in srgb, var(--seq) ${Math.round(12 + t * 78)}%, var(--surface))` : "";
+      const fg = t > 0.7 ? "color:#fff" : "";
+      return `<td class="cell" style="${bg};${fg}" title="${esc(r.name)} · ${monthLabel(pivot.months[i])}: ${money(v)}">${v ? TRY.format(v).replace(/,\d\d$/, "") : "–"}</td>`;
+    }).join("")}<td class="num hide-sm"><strong>${TRY.format(r.total).replace(/,\d\d$/, "")}</strong></td></tr>`).join("");
+  $("rep-pivot").innerHTML = pivot.rows.length ? head + `<tbody>${body}</tbody>` : `<tbody><tr><td class="empty">–</td></tr></tbody>`;
+}
+
+function simpleBarChart(canvas, old, labels, values, colors, tooltipTitle) {
+  if (old) old.destroy();
+  if (!window.Chart) return null;
+  const muted = cssVar("--muted"), border = cssVar("--border");
+  return new Chart(canvas, {
+    type: "bar",
+    data: { labels, datasets: [{ data: values, backgroundColor: colors, borderRadius: 3, maxBarThickness: 28 }] },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false }, tooltip: { callbacks: { title: tooltipTitle, label: (c) => money(c.raw) } } },
+      scales: { x: { grid: { display: false }, ticks: { color: muted, maxRotation: 0, autoSkip: true } },
+                y: { grid: { color: border }, ticks: { color: muted, callback: (v) => TRY.format(v).replace(/,00$/, "") } } },
+    },
+  });
+}
+
+function drawDaily(daily) {
+  const [y, m] = repMonth.split("-").map(Number);
+  const days = new Date(y, m, 0).getDate();
+  const byDay = Object.fromEntries(daily.map((d) => [Number(d.date.slice(8, 10)), d.total]));
+  const labels = Array.from({ length: days }, (_, i) => String(i + 1));
+  dailyChart = simpleBarChart($("rep-daily"), dailyChart, labels, labels.map((d) => byDay[d] || 0), cssVar("--seq"),
+    (items) => `${items[0].label} ${monthLabel(repMonth)}`);
+}
+
+async function showCategory(name) {
+  repCategory = name;
+  document.querySelectorAll("#rep-cats .bar-row").forEach((r) => r.classList.toggle("active", r.dataset.cat === name));
+  const [y, m] = repMonth.split("-").map(Number);
+  const until = `${repMonth}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+  const [trend, txs] = await Promise.all([
+    api(`/api/report/trend?month=${repMonth}&category=${encodeURIComponent(name)}`),
+    api(`/api/transactions?since=${repMonth}-01&until=${until}&category=${encodeURIComponent(name)}`),
+  ]);
+  const cat = report.categories.find((c) => c.name === name);
+  $("rep-detail").hidden = false;
+  $("rep-detail-title").innerHTML = `<span class="bar-name"><span class="dot" style="background:${colorOf(name)}"></span>${esc(name)} · ${monthLabel(repMonth)}</span>`;
+  $("rep-detail-sub").innerHTML = cat
+    ? `${money(cat.total)} · ${cat.count} işlem · ${deltaHtml(cat.total, cat.prev, "geçen aya göre")} · ${deltaHtml(cat.total, cat.avg3, "3 ay ortalamasına göre")}` : "";
+  // Seçili ay vurgulu, diğer aylar gri (tek seri: vurgu)
+  trendChart = simpleBarChart($("rep-trend"), trendChart, trend.map((t) => MONTH.format(new Date(t.month + "-01T00:00:00"))),
+    trend.map((t) => t.total), trend.map((t) => t.month === repMonth ? colorOf(name) : cssVar("--c-other")),
+    (items) => monthLabel(trend[items[0].dataIndex].month));
+  $("rep-detail-tx").innerHTML = txs.length ? txs.map((t) => `<tr><td>${fmtDate(t.date)}</td><td class="desc">${esc(t.description)}</td>
+    <td class="muted hide-sm">${esc(t.bank)}</td><td class="num ${t.amount < 0 ? "neg" : ""}">${money(t.amount)}</td></tr>`).join("")
+    : `<tr><td colspan="4" class="empty">İşlem yok</td></tr>`;
+}
+
+$("rep-cats").addEventListener("click", (e) => {
+  const row = e.target.closest("[data-cat]");
+  if (row) showCategory(row.dataset.cat).then(() => $("rep-detail").scrollIntoView({ behavior: "smooth", block: "nearest" }));
+});
+$("rep-detail-close").addEventListener("click", () => { repCategory = null; $("rep-detail").hidden = true;
+  document.querySelectorAll("#rep-cats .bar-row").forEach((r) => r.classList.remove("active")); });
+$("rep-prev").addEventListener("click", () => { const i = report.months.indexOf(repMonth); if (i > 0) loadReport(report.months[i - 1]); });
+$("rep-next").addEventListener("click", () => { const i = report.months.indexOf(repMonth); if (i < report.months.length - 1) loadReport(report.months[i + 1]); });
 
 async function loadStatements() {
   const rows = await api("/api/statements");

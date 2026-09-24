@@ -100,6 +100,8 @@ CREATE INDEX IF NOT EXISTS idx_tx_statement ON transactions(statement_id);
 
 # Para hareketi olan ama harcama sayılmayan kategoriler
 NON_SPENDING_CATEGORIES = {"Transfer", "Kart Ödemesi"}
+# Harcama raporlarına girmeyenler: yukarıdakiler + gelir ve kart ekstresindeki ödemeler
+SPEND_EXCLUDED_CATEGORIES = NON_SPENDING_CATEGORIES | {"Maaş", "Ödeme"}
 
 
 def file_hash(content: bytes) -> str:
@@ -559,14 +561,123 @@ class Storage:
         cur = self._write("UPDATE transactions SET category = ? WHERE id = ?", (category or None, tx_id))
         return cur.rowcount > 0
 
+    def _report_rows(self) -> list[dict]:
+        return self._all(
+            """SELECT t.date, t.description, t.amount, t.category, t.bank, s.kind
+               FROM transactions t LEFT JOIN statements s ON s.id = t.statement_id"""
+        )
+
+    @staticmethod
+    def _is_spending(category: str | None) -> bool:
+        return category not in SPEND_EXCLUDED_CATEGORIES
+
+    @staticmethod
+    def _is_income(row: dict, amount: Decimal) -> bool:
+        """Hesaplara gelen para: maaş ya da vadesiz dökümdeki girişler (kart ödemeleri hariç)."""
+        if amount >= 0 or row["category"] == "Kart Ödemesi":
+            return False
+        return row["category"] == "Maaş" or row["kind"] == "vadesiz"
+
     def monthly_summary(self) -> list[tuple[str, str, Decimal]]:
-        """(ay, kategori, toplam harcama) — sadece pozitif (harcama) tutarlar. Kendi hesaplar arası
-        transferler ve kredi kartı ödemeleri harcama sayılmaz (kart harcamaları zaten ayrıca sayılır)."""
+        """(ay, kategori, net harcama). İadeler kendi kategorisinden düşülür; kendi hesaplar arası
+        transferler, kart ödemeleri ve gelirler harcama sayılmaz."""
         totals: dict[tuple[str, str], Decimal] = {}
-        for row in self._all("SELECT date, category, amount FROM transactions"):
-            amount = Decimal(row["amount"])
-            if amount <= 0 or row["category"] in NON_SPENDING_CATEGORIES:
+        for row in self._report_rows():
+            if not self._is_spending(row["category"]):
                 continue
             key = (row["date"][:7], row["category"] or "Diğer")
-            totals[key] = totals.get(key, Decimal(0)) + amount
-        return sorted(((m, c, v) for (m, c), v in totals.items()), key=lambda r: (r[0], -r[2]))
+            totals[key] = totals.get(key, Decimal(0)) + Decimal(row["amount"])
+        return sorted(((m, c, v) for (m, c), v in totals.items() if v > 0), key=lambda r: (r[0], -r[2]))
+
+    def report(self, month: str) -> dict:
+        """Seçilen ayın harcama raporu: özet, kategoriler (önceki ay ve 3 ay ortalamasıyla),
+        en çok harcanan yerler, günlük harcama ve son 6 ayın kategori tablosu."""
+        cat_month: dict[tuple[str, str], Decimal] = {}
+        cat_count: dict[str, int] = {}
+        income: dict[str, Decimal] = {}
+        merchants: dict[str, dict] = {}
+        daily: dict[str, Decimal] = {}
+        tx_count = 0
+        for row in self._report_rows():
+            amount = Decimal(row["amount"])
+            m = row["date"][:7]
+            if self._is_income(row, amount):
+                income[m] = income.get(m, Decimal(0)) - amount
+            if not self._is_spending(row["category"]):
+                continue
+            cat = row["category"] or "Diğer"
+            cat_month[(m, cat)] = cat_month.get((m, cat), Decimal(0)) + amount
+            if m == month:
+                tx_count += 1
+                cat_count[cat] = cat_count.get(cat, 0) + 1
+                daily[row["date"]] = daily.get(row["date"], Decimal(0)) + amount
+                entry = merchants.setdefault(row["description"], {"total": Decimal(0), "count": 0, "category": cat})
+                entry["total"] += amount
+                entry["count"] += 1
+
+        months = sorted({m for m, _ in cat_month} | set(income))
+        prev_months = [m for m in months if m < month]
+        prev = prev_months[-1] if prev_months else None
+        last3 = prev_months[-3:]
+
+        def month_total(m: str) -> Decimal:
+            return sum((v for (mm, _), v in cat_month.items() if mm == m and v > 0), Decimal(0))
+
+        spend = month_total(month)
+        categories = []
+        for (m, cat), total in cat_month.items():
+            if m != month or total <= 0:
+                continue
+            avg3 = sum((max(cat_month.get((mm, cat), Decimal(0)), Decimal(0)) for mm in last3), Decimal(0)) / len(last3) \
+                if last3 else None
+            categories.append({
+                "name": cat, "total": total, "share": total / spend if spend else Decimal(0),
+                "prev": max(cat_month.get((prev, cat), Decimal(0)), Decimal(0)) if prev else None,
+                "avg3": avg3, "count": cat_count.get(cat, 0),
+            })
+        categories.sort(key=lambda c: -c["total"])
+
+        pivot_months = [m for m in months if m <= month][-6:]
+        pivot_cats: dict[str, list[Decimal]] = {}
+        for (m, cat), total in cat_month.items():
+            if m in pivot_months and total > 0:
+                pivot_cats.setdefault(cat, [Decimal(0)] * len(pivot_months))[pivot_months.index(m)] = total
+        pivot = sorted(({"name": c, "values": v, "total": sum(v, Decimal(0))} for c, v in pivot_cats.items()),
+                       key=lambda r: -r["total"])
+
+        year, mon = (int(x) for x in month.split("-"))
+        days_in_month = (date(year + mon // 12, mon % 12 + 1, 1) - date(year, mon, 1)).days
+        today = date.today()
+        elapsed = today.day if (today.year, today.month) == (year, mon) else days_in_month
+        return {
+            "month": month,
+            "months": months,
+            "kpi": {
+                "spend": spend,
+                "spend_prev": month_total(prev) if prev else None,
+                "spend_avg3": sum((month_total(m) for m in last3), Decimal(0)) / len(last3) if last3 else None,
+                "income": income.get(month, Decimal(0)),
+                "tx_count": tx_count,
+                "daily_avg": spend / elapsed if elapsed else Decimal(0),
+                "prev_month": prev,
+            },
+            "categories": categories,
+            "merchants": sorted(({"description": d, **v} for d, v in merchants.items() if v["total"] > 0),
+                                key=lambda x: -x["total"])[:10],
+            "daily": [{"date": d, "total": v} for d, v in sorted(daily.items())],
+            "pivot": {"months": pivot_months, "rows": pivot},
+        }
+
+    def category_trend(self, category: str, until: str, count: int = 12) -> list[dict]:
+        """Bir kategorinin son `count` ayındaki net harcaması (boş aylar 0)."""
+        totals: dict[str, Decimal] = {}
+        for row in self._report_rows():
+            if (row["category"] or "Diğer") == category and self._is_spending(row["category"]):
+                m = row["date"][:7]
+                totals[m] = totals.get(m, Decimal(0)) + Decimal(row["amount"])
+        year, mon = (int(x) for x in until.split("-"))
+        months = []
+        for _ in range(count):
+            months.append(f"{year:04d}-{mon:02d}")
+            year, mon = (year, mon - 1) if mon > 1 else (year - 1, 12)
+        return [{"month": m, "total": max(totals.get(m, Decimal(0)), Decimal(0))} for m in reversed(months)]
