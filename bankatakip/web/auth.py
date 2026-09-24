@@ -66,7 +66,11 @@ def missing_settings() -> list[str]:
     if len(os.environ.get("SESSION_SECRET", "")) < 32:
         missing.append("SESSION_SECRET (en az 32 karakter)")
     if not google_enabled() and not password_enabled():
-        if os.environ.get("GOOGLE_CLIENT_ID") and not allowed_emails():
+        panel_password = os.environ.get("PANEL_PASSWORD", "")
+        if panel_password:
+            missing.append(f"PANEL_PASSWORD çok kısa: {len(panel_password)} karakter, "
+                           f"en az {MIN_PANEL_PASSWORD} olmalı")
+        elif os.environ.get("GOOGLE_CLIENT_ID") and not allowed_emails():
             missing.append("ALLOWED_EMAILS")
         else:
             missing.append(f"GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET + ALLOWED_EMAILS "

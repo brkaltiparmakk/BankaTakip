@@ -130,7 +130,9 @@ def test_auth_info(client, monkeypatch):
 def test_password_login(client, monkeypatch):
     monkeypatch.setenv("SESSION_SECRET", "x" * 40)
     monkeypatch.setenv("PANEL_PASSWORD", "kisa")
-    assert client.get("/api/auth-info").json()["password"] is False  # 12 karakterden kısa
+    info = client.get("/api/auth-info").json()
+    assert info["password"] is False  # 12 karakterden kısa
+    assert info["missing"] == ["PANEL_PASSWORD çok kısa: 4 karakter, en az 12 olmalı"]
 
     monkeypatch.setenv("PANEL_PASSWORD", "cok-guclu-bir-sifre-123")
     monkeypatch.setattr(auth.time, "sleep", lambda s: None)
