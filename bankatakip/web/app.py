@@ -219,6 +219,16 @@ def run_sync(user: str = User, config: Config = Depends(get_config),
     return sync(config, storage, time_budget=_time_budget()).as_dict()
 
 
+@app.get("/api/mail-log")
+def mail_log(user: str = User, storage: Storage = Depends(get_storage)):
+    return storage.list_mail_log()
+
+
+@app.post("/api/mail-log/reset", dependencies=[SameOrigin])
+def reset_mail_log(user: str = User, storage: Storage = Depends(get_storage)):
+    return {"reset": storage.reset_skipped_mails()}
+
+
 @app.get("/api/cron/sync", include_in_schema=False)
 def cron_sync(request: Request, config: Config = Depends(get_config),
               storage: Storage = Depends(get_storage)):

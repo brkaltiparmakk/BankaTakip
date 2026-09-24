@@ -53,6 +53,20 @@ CREATE TABLE IF NOT EXISTS transactions (
     category     TEXT
 );
 
+-- Taramada incelenen her mail ve sonucu (panelde "İncelenen mailler" listesi)
+CREATE TABLE IF NOT EXISTS mail_log (
+    id          {pk},
+    account     TEXT NOT NULL,
+    message_id  TEXT NOT NULL,
+    bank        TEXT,
+    sender      TEXT,
+    subject     TEXT,
+    received_at TEXT,
+    status      TEXT NOT NULL,
+    detail      TEXT,
+    created_at  TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_tx_statement ON transactions(statement_id);
 """
@@ -164,6 +178,48 @@ class Storage:
             "ON CONFLICT DO NOTHING",
             (account, message_id, _now()),
         )
+
+    # Tekrar denenebilecek (ekstre bulunamayan) mail durumları
+    SKIPPED_STATUSES = ("konu_eslesmedi", "pdf_yok")
+
+    def log_mail(self, account: str, message_id: str, status: str, bank: str | None = None,
+                 sender: str | None = None, subject: str | None = None,
+                 received_at: datetime | None = None, detail: str | None = None) -> None:
+        self._write(
+            """INSERT INTO mail_log (account, message_id, bank, sender, subject, received_at,
+                   status, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (account, message_id, bank, sender, subject, _iso(received_at), status, detail, _now()),
+        )
+
+    def list_mail_log(self, limit: int = 300) -> list[dict]:
+        return self._all(
+            "SELECT * FROM mail_log ORDER BY COALESCE(received_at, created_at) DESC, id DESC LIMIT ?",
+            (limit,),
+        )
+
+    def reset_skipped_mails(self) -> int:
+        """Ekstre eklenmemiş mailleri yeniden taranacak hale getirir (ör. anahtar kelime
+        değiştikten sonra). Kaydı olmayan eski işaretler de temizlenir. Sıfırlanan mail
+        sayısını döndürür."""
+        placeholders = ", ".join("?" for _ in self.SKIPPED_STATUSES)
+        try:
+            cur = self._execute(
+                f"""DELETE FROM processed_mails WHERE NOT EXISTS (
+                        SELECT 1 FROM mail_log l
+                        WHERE l.account = processed_mails.account
+                          AND l.message_id = processed_mails.message_id
+                          AND l.status NOT IN ({placeholders}))""",
+                self.SKIPPED_STATUSES,
+            )
+            count = cur.rowcount
+            self._execute(f"DELETE FROM mail_log WHERE status IN ({placeholders})", self.SKIPPED_STATUSES)
+            # Son tarama tarihini sıfırla ki eski mailler de yeniden aransın
+            self._execute("DELETE FROM meta WHERE key LIKE ?", ("last_sync:%",))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return count
 
     # --- ekstreler ---
     def has_statement(self, content_hash: str) -> bool:

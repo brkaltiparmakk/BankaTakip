@@ -5,6 +5,7 @@ from __future__ import annotations
 import email
 import imaplib
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from email.header import decode_header, make_header
@@ -20,6 +21,23 @@ log = logging.getLogger(__name__)
 class Attachment:
     filename: str
     content: bytes
+
+
+@dataclass
+class MailHeader:
+    message_id: str
+    subject: str
+    sender: str
+    received: datetime | None
+
+
+def _parse_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass
@@ -102,6 +120,34 @@ class MailClient:
         if status != "OK" or not data or not data[0]:
             return []
         return data[0].split()
+
+    def fetch_headers(self, uids: list[bytes]) -> dict[bytes, "MailHeader"]:
+        """Birden çok mailin başlığını tek istekte okur (mail başına ayrı istekten çok daha hızlı)."""
+        assert self.conn is not None
+        headers: dict[bytes, MailHeader] = {}
+        for start in range(0, len(uids), 100):
+            chunk = uids[start:start + 100]
+            status, data = self.conn.uid(
+                "FETCH", b",".join(chunk),
+                "(UID BODY.PEEK[HEADER.FIELDS (MESSAGE-ID SUBJECT FROM DATE)])",
+            )
+            if status != "OK" or not data:
+                continue
+            for item in data:
+                if not isinstance(item, tuple):
+                    continue
+                m = re.search(rb"UID (\d+)", item[0])
+                if not m:
+                    continue
+                uid = m.group(1)
+                msg = email.message_from_bytes(item[1] or b"")
+                headers[uid] = MailHeader(
+                    message_id=(msg.get("Message-ID") or f"{self.account.name}-{uid.decode()}").strip(),
+                    subject=decode_str(msg.get("Subject")),
+                    sender=parseaddr(decode_str(msg.get("From")))[1].lower(),
+                    received=_parse_date(msg.get("Date")),
+                )
+        return headers
 
     def fetch_header(self, uid: bytes) -> tuple[str, str]:
         """(message_id, subject) — tüm maili indirmeden önce hızlı kontrol için."""

@@ -181,6 +181,17 @@ dd { margin: 0; overflow-wrap: anywhere; }
         <div id="upload-result" style="margin-top:12px"></div>
       </div>
     </div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h2 style="margin:0">İncelenen mailler</h2>
+        <button class="btn ghost" id="reset-btn" title="Ekstre bulunamayan mailleri bir sonraki taramada yeniden dener">Atlananları yeniden dene</button>
+      </div>
+      <p class="muted" style="font-size:13px;margin-top:0">Bankalardan gelen ve taramada bakılan mailler. Ekstreniz görünmüyorsa buradan nedenini görebilirsiniz.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Tarih</th><th>Banka</th><th>Konu</th><th>Sonuç</th></tr></thead>
+        <tbody id="maillog-body"></tbody>
+      </table></div>
+    </div>
     <div class="card">
       <h2>Ayarlar</h2>
       <dl id="settings-list"></dl>
@@ -373,7 +384,35 @@ $("tx-body").addEventListener("change", async (e) => {
   } catch (err) { flash(err.message, true); }
 });
 
+const MAIL_STATUS = {
+  eklendi: ["Ekstre eklendi", ""],
+  zaten_var: ["Zaten kayıtlı", ""],
+  konu_eslesmedi: ["Konu ekstre değil", "near"],
+  pdf_yok: ["PDF eki yok", "near"],
+  sifreli: ["PDF şifresi gerekli", "soon"],
+  hata: ["Okunamadı", "soon"],
+};
+
+async function loadMailLog() {
+  const rows = await api("/api/mail-log");
+  $("maillog-body").innerHTML = rows.length ? rows.map((r) => {
+    const [label, cls] = MAIL_STATUS[r.status] || [r.status, ""];
+    return `<tr><td>${fmtDate(r.received_at)}</td><td class="muted">${esc(r.bank)}<div style="font-size:12px">${esc(r.sender)}</div></td>
+      <td class="desc">${esc(r.subject) || "<span class=muted>(konusuz)</span>"}</td>
+      <td><span class="pill ${cls}">${label}</span>${r.detail ? `<div class="muted" style="font-size:12px;white-space:normal">${esc(r.detail)}</div>` : ""}</td></tr>`;
+  }).join("") : `<tr><td colspan="4" class="empty">Henüz incelenen mail yok. "Şimdi tara"ya basın.</td></tr>`;
+}
+
+$("reset-btn").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/mail-log/reset", { method: "POST" });
+    flash(`${r.reset} mail bir sonraki taramada yeniden denenecek. Şimdi "Şimdi tara"ya basabilirsiniz.`);
+    loadMailLog();
+  } catch (err) { flash(err.message, true); }
+});
+
 function renderSettings() {
+  loadMailLog();
   const accounts = me.accounts.length ? me.accounts.map((a) => `${esc(a.name)}: ${esc(a.email)}`).join("<br>")
     : `<span style="color:var(--danger)">Tanımlı değil (GMAIL_EMAIL / ICLOUD_EMAIL)</span>`;
   const banks = me.banks.map((b) => `${esc(b.name)} <span class="muted">(${b.has_pdf_password ? "PDF şifresi var" : "PDF şifresi yok"})</span>`).join("<br>");
@@ -391,7 +430,7 @@ $("sync-btn").addEventListener("click", async () => {
       (r.errors.length ? `<ul>${r.errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : "") + `</div>`;
   } catch (err) {
     $("sync-result").innerHTML = `<div class="notice error">${esc(err.message)}</div>`;
-  } finally { btn.disabled = false; btn.textContent = "Şimdi tara"; }
+  } finally { btn.disabled = false; btn.textContent = "Şimdi tara"; loadMailLog(); }
 });
 
 $("upload-form").addEventListener("submit", async (e) => {

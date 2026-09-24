@@ -117,49 +117,77 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date,
                config: Config, storage: Storage, report: SyncReport,
                deadline: float | None = None) -> None:
     account = client.account.name
-    seen: set[bytes] = set()
+    uids: list[bytes] = []
     for sender in bank.senders:
         try:
-            uids = client.search(folder, sender, since)
+            found = client.search(folder, sender, since)
         except Exception as exc:
             report.errors.append(f"{account}/{folder}: {bank.name} araması başarısız ({exc})")
             continue
-        for uid in uids:
-            if deadline and time.monotonic() > deadline:
-                report.incomplete = True
-                return
-            if uid in seen:
-                continue
-            seen.add(uid)
-            report.mails_checked += 1
+        uids.extend(u for u in found if u not in uids)
+    if not uids:
+        return
 
-            message_id, subject = client.fetch_header(uid)
-            if storage.is_mail_processed(account, message_id):
-                continue
-            if not bank.matches_subject(subject):
-                storage.mark_mail_processed(account, message_id)
-                continue
+    headers = client.fetch_headers(uids)
+    for uid in uids:
+        if deadline and time.monotonic() > deadline:
+            report.incomplete = True
+            return
+        header = headers.get(uid)
+        if header is None:
+            continue
+        report.mails_checked += 1
+        if storage.is_mail_processed(account, header.message_id):
+            continue
 
-            mail = client.fetch(uid)
-            if mail is None:
+        def record(status: str, detail: str | None = None) -> None:
+            storage.log_mail(account, header.message_id, status, bank=bank.name,
+                             sender=header.sender, subject=header.subject,
+                             received_at=header.received, detail=detail)
+
+        if not bank.matches_subject(header.subject):
+            storage.mark_mail_processed(account, header.message_id)
+            record("konu_eslesmedi")
+            continue
+
+        mail = client.fetch(uid)
+        if mail is None:
+            continue
+        if not mail.attachments:
+            storage.mark_mail_processed(account, header.message_id)
+            record("pdf_yok")
+            continue
+
+        retry_later = False
+        results = []
+        for att in mail.attachments:
+            try:
+                statement_id, count = import_pdf(
+                    att.content, bank, config, storage, source=account,
+                    filename=att.filename, received_at=mail.received,
+                )
+            except PdfPasswordError as exc:
+                retry_later = True  # şifre tanımlanınca tekrar denensin
+                report.errors.append(f"{bank.name} - '{mail.subject}': {exc}")
+                results.append(("sifreli", att.filename))
                 continue
-            retry_later = False
-            for att in mail.attachments:
-                try:
-                    statement_id, count = import_pdf(
-                        att.content, bank, config, storage, source=account,
-                        filename=att.filename, received_at=mail.received,
-                    )
-                except PdfPasswordError as exc:
-                    retry_later = True  # şifre tanımlanınca tekrar denensin
-                    report.errors.append(f"{bank.name} - '{mail.subject}': {exc}")
-                    continue
-                except Exception as exc:
-                    report.errors.append(f"{bank.name} - '{mail.subject}': ayrıştırılamadı ({exc})")
-                    continue
-                if statement_id is not None:
-                    report.statements_added += 1
-                    report.transactions_added += count
-                    log.info("%s: %s eklendi (%d işlem)", bank.name, att.filename, count)
-            if not retry_later:
-                storage.mark_mail_processed(account, message_id)
+            except Exception as exc:
+                report.errors.append(f"{bank.name} - '{mail.subject}': ayrıştırılamadı ({exc})")
+                results.append(("hata", f"{att.filename}: {exc}"))
+                continue
+            if statement_id is None:
+                results.append(("zaten_var", att.filename))
+            else:
+                report.statements_added += 1
+                report.transactions_added += count
+                results.append(("eklendi", f"{att.filename}: {count} işlem"))
+                log.info("%s: %s eklendi (%d işlem)", bank.name, att.filename, count)
+
+        # Mail başına tek kayıt: en anlamlı sonuç öne çıkar
+        for status in ("eklendi", "sifreli", "hata", "zaten_var"):
+            details = [d for st, d in results if st == status]
+            if details:
+                record(status, "; ".join(details))
+                break
+        if not retry_later:
+            storage.mark_mail_processed(account, header.message_id)

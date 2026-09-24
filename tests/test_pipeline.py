@@ -64,9 +64,11 @@ class FakeClient:
     def search(self, folder, sender, since):
         return [uid for uid, (s, _) in self.mails.items() if sender in s.sender]
 
-    def fetch_header(self, uid):
-        mail = self.mails[uid][0]
-        return mail.message_id, mail.subject
+    def fetch_headers(self, uids):
+        from bankatakip.mail import MailHeader
+        return {uid: MailHeader(self.mails[uid][0].message_id, self.mails[uid][0].subject,
+                                self.mails[uid][0].sender, self.mails[uid][0].received)
+                for uid in uids}
 
     def fetch(self, uid):
         return self.mails[uid][0]
@@ -112,3 +114,56 @@ def test_turkish_characters_in_pdf(config):
     assert st.summary.due_date.isoformat() == "2026-08-25"
     assert st.transactions[0].description == "ŞOK MARKET ÇANKAYA"
     assert st.transactions[0].category == "Market"
+
+
+def test_mail_log_and_reset(config, sample_pdf):
+    storage = Storage(config.database)
+    no_pdf = _mail("<np>", "Eylül ekstreniz", sample_pdf)
+    no_pdf.attachments = []
+    client = FakeClient({
+        b"1": (_mail("<a>", "Ağustos Ekstreniz", sample_pdf), None),
+        b"2": (_mail("<b>", "Kampanya fırsatı", sample_pdf), None),
+        b"3": (no_pdf, None),
+        b"4": (_mail("<d>", "Tekrar ekstre", sample_pdf), None),  # aynı PDF
+    })
+    sync_mod._sync_bank(client, "INBOX", config.banks[0], None, config, storage, sync_mod.SyncReport())
+    statuses = {r["message_id"]: r["status"] for r in storage.list_mail_log()}
+    assert statuses == {"<a>": "eklendi", "<b>": "konu_eslesmedi", "<np>": "pdf_yok", "<d>": "zaten_var"}
+    assert all(r["sender"] == "bilgi@garantibbva.com.tr" for r in storage.list_mail_log())
+
+    storage.set_meta("last_sync:gmail", "2026-09-01")
+    storage.mark_mail_processed("gmail", "<eski>")  # kayıt tutulmadan işaretlenmiş eski mail
+    assert storage.reset_skipped_mails() == 3
+    assert not storage.is_mail_processed("gmail", "<eski>")
+    assert not storage.is_mail_processed("gmail", "<b>")
+    assert not storage.is_mail_processed("gmail", "<np>")
+    assert storage.is_mail_processed("gmail", "<a>")
+    assert storage.get_meta("last_sync:gmail") is None
+    assert {r["message_id"] for r in storage.list_mail_log()} == {"<a>", "<d>"}
+
+
+def test_fetch_headers_parses_imap_response():
+    from bankatakip.config import MailAccount
+    from bankatakip.mail import MailClient
+
+    class Conn:
+        def uid(self, cmd, uids, query):
+            assert cmd == "FETCH" and uids == b"10,11"
+            return "OK", [
+                (b"1 (UID 10 BODY[HEADER.FIELDS (MESSAGE-ID SUBJECT FROM DATE)] {120}",
+                 b"Message-ID: <x@banka>\r\nSubject: =?utf-8?q?Hesap_=C3=96zeti?=\r\n"
+                 b"From: Banka <bilgi@banka.com.tr>\r\nDate: Mon, 15 Sep 2026 10:00:00 +0300\r\n\r\n"),
+                b")",
+                (b"2 (UID 11 BODY[HEADER.FIELDS (MESSAGE-ID SUBJECT FROM DATE)] {30}",
+                 b"Subject: Kampanya\r\n\r\n"),
+                b")",
+            ]
+
+    client = MailClient(MailAccount("gmail", "gmail", "a@gmail.com", "X", "imap.gmail.com"))
+    client.conn = Conn()
+    headers = client.fetch_headers([b"10", b"11"])
+    assert headers[b"10"].subject == "Hesap Özeti"
+    assert headers[b"10"].sender == "bilgi@banka.com.tr"
+    assert headers[b"10"].message_id == "<x@banka>"
+    assert headers[b"10"].received.day == 15
+    assert headers[b"11"].message_id == "gmail-11"  # Message-ID yoksa yedek kimlik

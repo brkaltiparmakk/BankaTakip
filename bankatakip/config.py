@@ -110,7 +110,7 @@ def _parse_account(acc: dict) -> MailAccount:
     return MailAccount(
         name=acc["name"],
         provider=provider,
-        email=acc["email"],
+        email=str(acc["email"]).strip(),
         password_env=acc["password_env"],
         host=acc.get("host", host),
         port=int(acc.get("port", port)),
