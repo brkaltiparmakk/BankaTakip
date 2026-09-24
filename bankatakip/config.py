@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -103,6 +104,16 @@ def _read_raw(path: Path) -> dict:
     return {}
 
 
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def clean_email(value: str) -> str:
+    """Değerin içinden e-posta adresini ayıklar: "Ad Soyad <a@b.com>", " a@b.com " gibi
+    girişlerde sadece a@b.com kalır."""
+    m = EMAIL_RE.search(str(value))
+    return m.group(0) if m else str(value).strip()
+
+
 def _parse_account(acc: dict) -> MailAccount:
     provider = acc.get("provider", "custom")
     host, port = PROVIDER_HOSTS.get(provider, (acc.get("host"), acc.get("port", 993)))
@@ -111,7 +122,7 @@ def _parse_account(acc: dict) -> MailAccount:
     return MailAccount(
         name=acc["name"],
         provider=provider,
-        email=str(acc["email"]).strip(),
+        email=clean_email(acc["email"]),
         password_env=acc["password_env"],
         host=acc.get("host", host),
         port=int(acc.get("port", port)),

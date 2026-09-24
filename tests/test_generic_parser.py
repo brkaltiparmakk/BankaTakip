@@ -93,3 +93,11 @@ def test_mail_password_cleanup(monkeypatch):
     monkeypatch.setenv("T_ICLOUD_PW", " abcd-efgh-ijkl-mnop ")
     assert gmail.password == "abcdefghijklmnop"
     assert icloud.password == "abcd-efgh-ijkl-mnop"
+
+
+def test_clean_email():
+    from bankatakip.config import clean_email
+    assert clean_email(" brk@gmail.com \n") == "brk@gmail.com"
+    assert clean_email("Burak Altıparmak <brk@gmail.com>") == "brk@gmail.com"
+    assert clean_email("Burak brk@gmail.com") == "brk@gmail.com"
+    assert clean_email("brk@gmail.com, diger@icloud.com") == "brk@gmail.com"

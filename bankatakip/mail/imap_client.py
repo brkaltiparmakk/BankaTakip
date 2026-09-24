@@ -104,7 +104,13 @@ class MailClient:
         log.info("%s (%s) bağlanılıyor...", self.account.name, self.account.host)
         password = self.account.password  # eksikse bağlanmadan hata ver
         self.conn = imaplib.IMAP4_SSL(self.account.host, self.account.port, timeout=self.timeout)
-        self.conn.login(self.account.email, password)
+        # AUTHENTICATE PLAIN: kullanıcı adı/şifredeki boşluk ve özel karakterler LOGIN komutundaki
+        # gibi sorun çıkarmaz (Gmail ve iCloud destekler); desteklenmezse klasik LOGIN'e dönülür.
+        if "AUTH=PLAIN" in self.conn.capabilities:
+            credentials = f"\0{self.account.email}\0{password}".encode()
+            self.conn.authenticate("PLAIN", lambda _: credentials)
+        else:
+            self.conn.login(self.account.email, password)
 
     def close(self) -> None:
         if self.conn is not None:
