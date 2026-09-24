@@ -23,7 +23,7 @@ Gmail / iCloud (IMAP)
 ## Vercel'e kurulum (web paneli)
 
 Panel Vercel'de çalışır; veriler Neon Postgres'te durur, mailler her sabah otomatik taranır.
-Panele sadece izin verdiğiniz Google hesaplarıyla girilebilir.
+Panele sadece izin verdiğiniz Google hesaplarıyla veya belirlediğiniz panel şifresiyle girilebilir.
 
 ### 1. Projeyi Vercel'e bağlayın
 [vercel.com/new](https://vercel.com/new) → bu GitHub deposunu seçin → Framework: **Other** → Deploy.
@@ -33,7 +33,10 @@ Panele sadece izin verdiğiniz Google hesaplarıyla girilebilir.
 Vercel projesi → **Storage** → **Create Database** → **Neon** → projeye bağlayın.
 Bu, `DATABASE_URL` değişkenini otomatik ekler. Tablolar ilk istekte kendiliğinden oluşur.
 
-### 3. Google ile giriş
+### 3. Google ile giriş (isteğe bağlı)
+Hızlı başlamak için bu adımı atlayıp `PANEL_PASSWORD` ile şifreli giriş kullanabilirsiniz;
+ikisi birlikte de açık olabilir.
+
 1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials) → yeni proje →
    **OAuth consent screen**: External, uygulama adı "BankaTakip", test kullanıcısı olarak kendi adresiniz.
 2. **Credentials → Create credentials → OAuth client ID** → Web application.
@@ -49,6 +52,7 @@ Vercel projesi → **Settings → Environment Variables** (tam liste `.env.examp
 | `ICLOUD_EMAIL`, `ICLOUD_APP_PASSWORD` | iCloud adresi ve uygulamaya özel parola |
 | `GARANTI_PDF_PASSWORD` vb. | Şifreli ekstreler için PDF şifreleri |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | 3. adımdan |
+| `PANEL_PASSWORD` | Şifreyle giriş için en az 12 karakter (Google yerine veya yanında) |
 | `SESSION_SECRET` | En az 32 karakterlik rastgele metin |
 | `ALLOWED_EMAILS` | Panele girebilecek Google adres(ler)i |
 | `CRON_SECRET` | Rastgele bir metin (otomatik taramayı korur) |

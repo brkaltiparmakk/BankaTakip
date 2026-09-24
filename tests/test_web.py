@@ -12,7 +12,7 @@ H = {"X-Requested-With": "bankatakip"}
 @pytest.fixture
 def client(config, monkeypatch):
     for var in ["VERCEL", "AUTH_DISABLED", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET",
-                "SESSION_SECRET", "ALLOWED_EMAILS", "CRON_SECRET"]:
+                "SESSION_SECRET", "ALLOWED_EMAILS", "CRON_SECRET", "PANEL_PASSWORD"]:
         monkeypatch.delenv(var, raising=False)
     web_app.app.dependency_overrides[web_app.get_config] = lambda: config
     yield TestClient(web_app.app)
@@ -116,3 +116,41 @@ def test_cron_requires_secret(client, monkeypatch):
     r = client.get("/api/cron/sync", headers={"Authorization": "Bearer s3cret"})
     assert r.status_code == 200
     assert r.json()["errors"] == ["Tanımlı mail hesabı yok (GMAIL_EMAIL / ICLOUD_EMAIL)."]
+
+
+def test_auth_info(client, monkeypatch):
+    info = client.get("/api/auth-info").json()
+    assert info["google"] is False and info["password"] is False and len(info["missing"]) == 2
+    _login_env(monkeypatch)
+    assert client.get("/api/auth-info").json() == {
+        "google": True, "password": False, "disabled": False, "missing": []}
+
+
+def test_password_login(client, monkeypatch):
+    monkeypatch.setenv("SESSION_SECRET", "x" * 40)
+    monkeypatch.setenv("PANEL_PASSWORD", "kisa")
+    assert client.get("/api/auth-info").json()["password"] is False  # 12 karakterden kısa
+
+    monkeypatch.setenv("PANEL_PASSWORD", "cok-guclu-bir-sifre-123")
+    monkeypatch.setattr(auth.time, "sleep", lambda s: None)
+    assert client.get("/api/me").status_code == 401
+    # CSRF başlığı zorunlu
+    assert client.post("/auth/password", json={"password": "cok-guclu-bir-sifre-123"}).status_code == 403
+    assert client.post("/auth/password", json={"password": "yanlis"}, headers=H).status_code == 401
+    r = client.post("/auth/password", json={"password": "cok-guclu-bir-sifre-123"}, headers=H)
+    assert r.status_code == 200
+    me = client.get("/api/me").json()
+    assert me["email"] == "şifre ile giriş"
+    assert "Mail hesabı tanımlı değil: GMAIL_EMAIL / ICLOUD_EMAIL ekleyin." in me["warnings"]
+
+    # şifre değişince eski oturum geçersiz olur
+    monkeypatch.setenv("PANEL_PASSWORD", "yeni-cok-guclu-sifre-456")
+    assert client.get("/api/me").status_code == 401
+
+
+def test_google_session_rejected_when_google_disabled(client, monkeypatch):
+    monkeypatch.setenv("SESSION_SECRET", "x" * 40)
+    monkeypatch.setenv("PANEL_PASSWORD", "cok-guclu-bir-sifre-123")
+    monkeypatch.setenv("ALLOWED_EMAILS", "ben@gmail.com")
+    client.cookies.set(auth.SESSION_COOKIE, auth.sign_session("ben@gmail.com"))
+    assert client.get("/api/me").status_code == 401

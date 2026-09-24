@@ -89,7 +89,9 @@ class Storage:
             import psycopg
             from psycopg.rows import dict_row
 
-            self.conn = psycopg.connect(str(url), row_factory=dict_row, autocommit=False)
+            # prepare_threshold=None: Neon'un bağlantı havuzu (PgBouncer) ile uyumlu olsun
+            self.conn = psycopg.connect(str(url), row_factory=dict_row, autocommit=False,
+                                        prepare_threshold=None)
             if str(url) not in _SCHEMA_READY:
                 schema = _TABLES.format(pk="BIGSERIAL PRIMARY KEY")
                 with self.conn.cursor() as cur:

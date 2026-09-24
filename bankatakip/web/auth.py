@@ -1,9 +1,11 @@
 """Google ile giriş (OAuth 2.0) ve imzalı oturum çerezi.
 
-Gerekli ortam değişkenleri:
-  GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET  Google Cloud Console > OAuth istemcisi
-  SESSION_SECRET                          çerezleri imzalamak için uzun rastgele bir metin
-  ALLOWED_EMAILS                          panele girebilecek adresler (virgülle ayrılmış)
+İki giriş yöntemi var, en az biri ayarlanmalı:
+  Google:  GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (Google Cloud Console > OAuth istemcisi)
+           ve ALLOWED_EMAILS (panele girebilecek adresler, virgülle ayrılmış)
+  Şifre:   PANEL_PASSWORD (en az 12 karakter)
+Her durumda:
+  SESSION_SECRET  çerezleri imzalamak için en az 32 karakterlik rastgele bir metin
 İsteğe bağlı:
   APP_URL        ör. https://bankatakip.vercel.app (verilmezse istekten çıkarılır)
   AUTH_DISABLED  =1 ise yerelde girişsiz çalışır; Vercel'de her zaman yok sayılır.
@@ -22,7 +24,7 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 SESSION_COOKIE = "bt_session"
 STATE_COOKIE = "bt_oauth_state"
@@ -46,9 +48,36 @@ def allowed_emails() -> set[str]:
     return {e.strip().lower() for e in raw.split(",") if e.strip()}
 
 
+MIN_PANEL_PASSWORD = 12
+
+
+def google_enabled() -> bool:
+    return bool(os.environ.get("GOOGLE_CLIENT_ID") and os.environ.get("GOOGLE_CLIENT_SECRET")
+                and allowed_emails())
+
+
+def password_enabled() -> bool:
+    return len(os.environ.get("PANEL_PASSWORD", "")) >= MIN_PANEL_PASSWORD
+
+
 def missing_settings() -> list[str]:
-    names = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "SESSION_SECRET", "ALLOWED_EMAILS"]
-    return [n for n in names if not os.environ.get(n)]
+    """Girişin çalışması için eksik olan ayarlar (boşsa giriş hazır)."""
+    missing = []
+    if len(os.environ.get("SESSION_SECRET", "")) < 32:
+        missing.append("SESSION_SECRET (en az 32 karakter)")
+    if not google_enabled() and not password_enabled():
+        if os.environ.get("GOOGLE_CLIENT_ID") and not allowed_emails():
+            missing.append("ALLOWED_EMAILS")
+        else:
+            missing.append(f"GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET + ALLOWED_EMAILS "
+                           f"veya PANEL_PASSWORD (en az {MIN_PANEL_PASSWORD} karakter)")
+    return missing
+
+
+def _password_fingerprint() -> str:
+    # Şifre değişince eski şifreyle açılmış oturumlar geçersiz olsun
+    pw = os.environ.get("PANEL_PASSWORD", "").encode()
+    return _b64(hmac.new(_secret(), b"pw:" + pw, hashlib.sha256).digest())[:16]
 
 
 def _secret() -> bytes:
@@ -66,8 +95,12 @@ def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def sign_session(email: str, now: float | None = None) -> str:
-    payload = _b64(json.dumps({"email": email, "exp": int((time.time() if now is None else now) + SESSION_TTL)}).encode())
+def sign_session(email: str, now: float | None = None, method: str = "google") -> str:
+    data = {"email": email, "method": method,
+            "exp": int((time.time() if now is None else now) + SESSION_TTL)}
+    if method == "password":
+        data["pw"] = _password_fingerprint()
+    payload = _b64(json.dumps(data).encode())
     sig = _b64(hmac.new(_secret(), payload.encode(), hashlib.sha256).digest())
     return f"{payload}.{sig}"
 
@@ -85,9 +118,13 @@ def read_session(token: str | None) -> str | None:
         return None
     if data.get("exp", 0) < time.time():
         return None
+    if data.get("method") == "password":
+        if not password_enabled() or not hmac.compare_digest(str(data.get("pw", "")), _password_fingerprint()):
+            return None
+        return "şifre ile giriş"
     email = str(data.get("email", "")).lower()
     # İzin listesinden çıkarılan biri eski çereziyle girmeye devam edemesin
-    return email if email in allowed_emails() else None
+    return email if google_enabled() and email in allowed_emails() else None
 
 
 def current_user(request: Request) -> str:
@@ -121,8 +158,8 @@ def _cookie_secure(request: Request) -> bool:
 
 
 def login_redirect(request: Request) -> RedirectResponse:
-    if missing_settings():
-        raise HTTPException(503, "Giriş ayarlanmamış: " + ", ".join(missing_settings()))
+    if missing_settings() or not google_enabled():
+        raise HTTPException(503, "Google ile giriş ayarlanmamış.")
     state = secrets.token_urlsafe(24)
     params = {
         "client_id": os.environ["GOOGLE_CLIENT_ID"],
@@ -162,7 +199,7 @@ async def handle_callback(request: Request) -> RedirectResponse:
         raise HTTPException(400, "Google hesap bilgisi alınamadı.")
     info = info_resp.json()
     email = str(info.get("email", "")).lower()
-    if not info.get("email_verified") or email not in allowed_emails():
+    if not info.get("email_verified") or not google_enabled() or email not in allowed_emails():
         raise HTTPException(403, f"{email or 'Bu hesap'} panele erişim iznine sahip değil.")
 
     response = RedirectResponse("/", status_code=302)
@@ -170,6 +207,27 @@ async def handle_callback(request: Request) -> RedirectResponse:
                         secure=_cookie_secure(request), samesite="lax")
     response.delete_cookie(STATE_COOKIE)
     return response
+
+
+def password_login(request: Request, password: str) -> JSONResponse:
+    if missing_settings() or not password_enabled():
+        raise HTTPException(503, "Şifreyle giriş ayarlanmamış.")
+    expected = os.environ["PANEL_PASSWORD"]
+    if not hmac.compare_digest(password.encode(), expected.encode()):
+        time.sleep(1)  # deneme-yanılmayı yavaşlat
+        raise HTTPException(401, "Şifre yanlış.")
+    response = JSONResponse({"ok": True})
+    response.set_cookie(SESSION_COOKIE, sign_session("panel", method="password"), max_age=SESSION_TTL,
+                        httponly=True, secure=_cookie_secure(request), samesite="lax")
+    return response
+
+
+def auth_info() -> dict:
+    """Giriş ekranı için herkese açık bilgi: hangi yöntemler açık, ne eksik."""
+    if auth_disabled():
+        return {"google": False, "password": False, "disabled": True, "missing": []}
+    return {"google": google_enabled(), "password": password_enabled(),
+            "disabled": False, "missing": missing_settings()}
 
 
 def logout() -> RedirectResponse:

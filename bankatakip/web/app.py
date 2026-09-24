@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from ..config import Config, ConfigError, load_config
 from ..parsers import PdfPasswordError
-from ..storage import Storage
+from ..storage import Storage, is_postgres_url
 from ..sync import import_pdf, sync
 from . import auth
 
@@ -88,6 +88,20 @@ async def callback(request: Request):
     return await auth.handle_callback(request)
 
 
+class PasswordLogin(BaseModel):
+    password: str
+
+
+@app.post("/auth/password", include_in_schema=False, dependencies=[SameOrigin])
+def password_login(request: Request, body: PasswordLogin):
+    return auth.password_login(request, body.password)
+
+
+@app.get("/api/auth-info")
+def auth_info():
+    return auth.auth_info()
+
+
 @app.get("/auth/logout", include_in_schema=False)
 def logout():
     return auth.logout()
@@ -95,10 +109,26 @@ def logout():
 
 # --- API ---
 
+def setup_warnings(config: Config) -> list[str]:
+    """Panelde gösterilecek kurulum eksikleri (değerler değil, sadece adlar)."""
+    warnings = []
+    if auth.on_vercel() and not is_postgres_url(config.database):
+        warnings.append("DATABASE_URL tanımlı değil: veriler kalıcı olarak saklanamaz.")
+    if not config.accounts:
+        warnings.append("Mail hesabı tanımlı değil: GMAIL_EMAIL / ICLOUD_EMAIL ekleyin.")
+    for account in config.accounts:
+        if not os.environ.get(account.password_env):
+            warnings.append(f"{account.name} için {account.password_env} tanımlı değil.")
+    if auth.on_vercel() and not os.environ.get("CRON_SECRET"):
+        warnings.append("CRON_SECRET tanımlı değil: otomatik günlük tarama çalışmaz.")
+    return warnings
+
+
 @app.get("/api/me")
 def me(user: str = User, config: Config = Depends(get_config)):
     return {
         "email": user,
+        "warnings": setup_warnings(config),
         "accounts": [{"name": a.name, "email": a.email} for a in config.accounts],
         "banks": [
             {"name": b.name, "senders": b.senders, "has_pdf_password": bool(b.pdf_password)}

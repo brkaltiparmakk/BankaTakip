@@ -108,9 +108,17 @@ dd { margin: 0; overflow-wrap: anywhere; }
 <main>
   <div id="login" class="card login" hidden>
     <h2>BankaTakip</h2>
-    <p class="muted" id="login-msg">Devam etmek için Google hesabınızla giriş yapın.</p>
-    <a class="btn" href="/auth/login" id="login-btn">Google ile giriş yap</a>
+    <p class="muted" id="login-msg">Devam etmek için giriş yapın.</p>
+    <a class="btn" href="/auth/login" id="login-btn" hidden>Google ile giriş yap</a>
+    <form id="pw-form" hidden>
+      <input type="password" id="pw-input" placeholder="Panel şifresi" autocomplete="current-password" required style="width:100%;margin-top:12px">
+      <button class="btn" type="submit" style="width:100%;margin-top:10px">Giriş yap</button>
+      <p id="pw-error" class="muted" style="color:var(--danger);margin:8px 0 0"></p>
+    </form>
+    <div id="login-missing" class="notice" style="text-align:left;margin-top:12px" hidden></div>
   </div>
+
+  <div id="warnings"></div>
 
   <div id="flash"></div>
 
@@ -208,12 +216,36 @@ function flash(msg, error = false) {
   $("flash").innerHTML = msg ? `<div class="notice ${error ? "error" : ""}">${esc(msg)}</div>` : "";
 }
 
-function showLogin(msg) {
+async function showLogin(msg) {
   $("header").hidden = true;
   document.querySelectorAll("section").forEach((s) => (s.hidden = true));
+  $("warnings").innerHTML = "";
   $("login").hidden = false;
-  if (msg) { $("login-msg").textContent = msg; $("login-btn").hidden = true; }
+  if (msg) { $("login-msg").textContent = msg; return; }
+  let info;
+  try { info = await (await fetch("/api/auth-info")).json(); } catch { $("login-msg").textContent = "Sunucuya ulaşılamadı."; return; }
+  $("login-btn").hidden = !info.google;
+  $("pw-form").hidden = !info.password;
+  if (info.missing.length) {
+    $("login-msg").textContent = "Giriş henüz ayarlanmamış.";
+    $("login-missing").hidden = false;
+    $("login-missing").innerHTML = "Vercel ortam değişkenlerine şunları ekleyin:<ul>" +
+      info.missing.map((m) => `<li>${esc(m)}</li>`).join("") + "</ul>";
+  }
 }
+
+$("pw-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("pw-error").textContent = "";
+  const res = await fetch("/auth/password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Requested-With": "bankatakip" },
+    body: JSON.stringify({ password: $("pw-input").value }),
+  });
+  if (res.ok) return location.reload();
+  const data = await res.json().catch(() => ({}));
+  $("pw-error").textContent = data.detail || "Giriş başarısız.";
+});
 
 function showTab(name) {
   current = name;
@@ -381,13 +413,15 @@ $("nav").addEventListener("click", (e) => { const b = e.target.closest("button")
 (async function init() {
   try {
     const res = await fetch("/api/me");
-    if (res.status === 401) return showLogin();
+    if (res.status === 401 || res.status === 503) return showLogin();
     const data = await res.json();
     if (!res.ok) return showLogin(data.detail || "Sunucu hatası");
     me = data;
   } catch { return showLogin("Sunucuya ulaşılamadı."); }
   $("header").hidden = false;
   $("user-email").textContent = me.email;
+  if (me.warnings.length)
+    $("warnings").innerHTML = `<div class="notice"><strong>Kurulum eksikleri</strong><ul>${me.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul></div>`;
   const bankOpts = me.banks.map((b) => `<option>${esc(b.name)}</option>`).join("");
   $("f-bank").innerHTML += bankOpts;
   $("upload-bank").innerHTML = bankOpts;
