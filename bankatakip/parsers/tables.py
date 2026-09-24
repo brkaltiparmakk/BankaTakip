@@ -143,3 +143,44 @@ def rows_to_text(rows: list[list[str]]) -> str:
 def extract_table_text(content: bytes, kind: str) -> str:
     readers = {"xlsx": rows_from_xlsx, "xls": rows_from_xls, "html": rows_from_html}
     return rows_to_text(readers[kind](content))
+
+
+class _TextParser(HTMLParser):
+    """HTML'i düz metne çevirir; blok etiketleri satır sonu, tablo hücreleri iki boşluk olur."""
+
+    BLOCK = {"br", "p", "div", "tr", "li", "h1", "h2", "h3", "h4", "h5", "h6", "table", "section"}
+    SKIP = {"style", "script", "head", "title"}
+
+    def __init__(self):
+        super().__init__()
+        self.parts: list[str] = []
+        self._skip = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self._skip += 1
+        elif tag in self.BLOCK:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP:
+            self._skip = max(0, self._skip - 1)
+        elif tag in ("td", "th"):
+            self.parts.append("  ")
+        elif tag in self.BLOCK:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if not self._skip:
+            self.parts.append(data)
+
+
+def html_to_text(html: str) -> str:
+    parser = _TextParser()
+    parser.feed(html)
+    lines = []
+    for line in "".join(parser.parts).replace("\xa0", " ").splitlines():
+        line = "  ".join(" ".join(cell.split()) for cell in line.split("  ") if cell.strip())
+        if line:
+            lines.append(line)
+    return "\n".join(lines)

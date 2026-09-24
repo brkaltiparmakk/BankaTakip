@@ -48,6 +48,7 @@ class FetchedMail:
     subject: str
     received: datetime | None
     attachments: list[Attachment] = field(default_factory=list)
+    body_text: str = ""  # mail gövdesinin düz metni (ekstreyi gövdede gönderen bankalar için)
 
 
 def decode_str(value: str | None) -> str:
@@ -88,6 +89,32 @@ def extract_statement_attachments(msg: Message) -> list[Attachment]:
         if payload:
             attachments.append(Attachment(filename or "ekstre", payload))
     return attachments
+
+
+def extract_body_text(msg: Message) -> str:
+    """Mail gövdesini düz metin olarak döndürür (HTML varsa tabloları koruyarak ondan)."""
+    from ..parsers.tables import html_to_text
+
+    html = plain = None
+    for part in msg.walk():
+        if part.get_content_maintype() == "multipart" or part.get_filename():
+            continue
+        ctype = part.get_content_type()
+        if ctype not in ("text/html", "text/plain"):
+            continue
+        payload = part.get_payload(decode=True) or b""
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            text = payload.decode(charset, errors="replace")
+        except LookupError:
+            text = payload.decode("utf-8", errors="replace")
+        if ctype == "text/html" and html is None:
+            html = text
+        elif ctype == "text/plain" and plain is None:
+            plain = text
+    if html:
+        return html_to_text(html)
+    return plain or ""
 
 
 # Eski ad; geriye dönük uyumluluk için
@@ -243,4 +270,5 @@ class MailClient:
             subject=decode_str(msg.get("Subject")),
             received=received,
             attachments=extract_statement_attachments(msg),
+            body_text=extract_body_text(msg),
         )

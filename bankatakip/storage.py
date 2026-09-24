@@ -14,7 +14,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from .models import ParsedStatement
+from .models import ParsedStatement, Transaction
 
 _TABLES = """
 CREATE TABLE IF NOT EXISTS processed_mails (
@@ -180,7 +180,7 @@ class Storage:
         )
 
     # Tekrar denenebilecek (ekstre bulunamayan) mail durumları
-    SKIPPED_STATUSES = ("konu_eslesmedi", "pdf_yok")
+    SKIPPED_STATUSES = ("konu_eslesmedi", "pdf_yok", "bildirim_okunamadi")
 
     def log_mail(self, account: str, message_id: str, status: str, bank: str | None = None,
                  sender: str | None = None, subject: str | None = None,
@@ -259,6 +259,41 @@ class Storage:
                      str(tx.amount), tx.category)
                     for tx in statement.transactions
                 ],
+            )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return statement_id
+
+    def has_same_summary(self, bank: str, due_date: date | None, period_debt: Decimal | None) -> bool:
+        """Aynı bankanın aynı son ödeme tarihli ve aynı borçlu ekstresi zaten var mı?
+        (Aynı dönem için gelen "hesap özeti" ve "ekstre borcu" maillerini tekilleştirmek için.)"""
+        if due_date is None or period_debt is None:
+            return False
+        return self._one(
+            "SELECT 1 AS x FROM statements WHERE bank = ? AND due_date = ? AND period_debt = ?",
+            (bank, due_date.isoformat(), str(period_debt)),
+        ) is not None
+
+    def add_notification(self, bank: str, source: str, tx: "Transaction") -> int:
+        """Anlık bildirimden gelen işlemi, o bankanın o ayki "bildirimler" kaydına ekler."""
+        month = tx.date.strftime("%Y-%m")
+        key = f"bildirim:{source}:{bank}:{month}"
+        try:
+            row = self._one("SELECT id FROM statements WHERE file_hash = ?", (key,))
+            if row:
+                statement_id = row["id"]
+            else:
+                statement_id = self._execute(
+                    """INSERT INTO statements (file_hash, bank, source, statement_date, created_at)
+                       VALUES (?, ?, ?, ?, ?) RETURNING id""",
+                    (key, bank, f"{source} (bildirim)", f"{month}-01", _now()),
+                ).fetchone()["id"]
+            self._execute(
+                """INSERT INTO transactions (statement_id, bank, date, description, amount, category)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (statement_id, bank, tx.date.isoformat(), tx.description, str(tx.amount), tx.category),
             )
             self.conn.commit()
         except Exception:

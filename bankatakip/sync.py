@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 from .config import BankConfig, Config
 from .mail import MailClient
 from .parsers import PdfPasswordError, extract_document_text, get_parser
+from .parsers.notifications import notification_sign, parse_notification
 from .storage import Storage, file_hash
 
 log = logging.getLogger(__name__)
@@ -69,6 +70,29 @@ def import_statement(
         received_at=received_at,
     )
     return statement_id, len(statement.transactions)
+
+
+def _sample(text: str, limit: int = 800) -> str:
+    """Kayıt için gövde örneği: okunamayan mailin biçimini sonradan inceleyebilmek için."""
+    return " ".join(text.split())[:limit]
+
+
+def _import_body(mail, bank: BankConfig, config: Config, storage: Storage, account: str,
+                 report: SyncReport) -> tuple[str, str | None]:
+    text = mail.body_text
+    statement = get_parser(bank.name, config.categories).parse(text)
+    s = statement.summary
+    if s.due_date is None and s.period_debt is None and not statement.transactions:
+        return "pdf_yok", _sample(text)
+    if not statement.transactions and storage.has_same_summary(bank.name, s.due_date, s.period_debt):
+        return "zaten_var", "aynı dönem ekstresi zaten kayıtlı"
+    digest = file_hash(b"body:" + mail.message_id.encode())
+    statement_id = storage.save_statement(statement, digest, source=account, received_at=mail.received)
+    if statement_id is None:
+        return "zaten_var", None
+    report.statements_added += 1
+    report.transactions_added += len(statement.transactions)
+    return "eklendi", f"mail gövdesinden: {len(statement.transactions)} işlem · {_sample(text, 300)}"
 
 
 def _account_since(config: Config, storage: Storage, account: str) -> date | None:
@@ -155,7 +179,9 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
                              sender=header.sender, subject=header.subject,
                              received_at=header.received, detail=detail)
 
-        if not bank.matches_subject(header.subject):
+        is_statement = bank.matches_subject(header.subject)
+        is_notification = notification_sign(header.subject) is not None
+        if not is_statement and not is_notification:
             storage.mark_mail_processed(account, header.message_id)
             record("konu_eslesmedi")
             continue
@@ -163,9 +189,24 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
         mail = client.fetch(uid)
         if mail is None:
             continue
-        if not mail.attachments:
+
+        if is_notification and not is_statement:
+            tx = parse_notification(mail.body_text, mail.subject, mail.received)
+            if tx is None:
+                record("bildirim_okunamadi", _sample(mail.body_text))
+            else:
+                tx.category = get_parser(bank.name, config.categories).categorize(tx.description)
+                storage.add_notification(bank.name, account, tx)
+                report.transactions_added += 1
+                record("bildirim_eklendi", f"{tx.description}: {tx.amount} TL · {_sample(mail.body_text, 300)}")
             storage.mark_mail_processed(account, header.message_id)
-            record("pdf_yok")
+            continue
+
+        if not mail.attachments:
+            # Ekstreyi ek yerine mail gövdesinde gönderen bankalar (ör. Akbank)
+            status, detail = _import_body(mail, bank, config, storage, account, report)
+            record(status, detail)
+            storage.mark_mail_processed(account, header.message_id)
             continue
 
         retry_later = False
