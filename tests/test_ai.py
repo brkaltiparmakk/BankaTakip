@@ -79,13 +79,16 @@ class FakeAI:
         self.calls = 0
         self.quota_after = quota_after
 
-    def extract_notifications(self, items):
+    def extract_notifications(self, items, categories=None):
         self.calls += 1
         if self.quota_after is not None and self.calls > self.quota_after:
             raise AIQuotaExceeded("sınır doldu")
-        return [ai_mod.Transaction(date(2026, 9, 18), f"İŞYERİ {i}", Decimal("10")) for i, _ in enumerate(items)]
+        self.categories = categories
+        return [ai_mod.Transaction(date(2026, 9, 18), f"İŞYERİ {i}", Decimal("10"),
+                                   sector="Evcil Hayvan" if i == 0 else "market") for i, _ in enumerate(items)]
 
-    def extract_statement(self, bank, subject, text=None, document=None, mime_type="application/pdf"):
+    def extract_statement(self, bank, subject, text=None, document=None, mime_type="application/pdf",
+                          categories=None):
         if "kampanya" in (text or ""):
             return None
         return ai_mod.ParsedStatement(bank, ai_mod.StatementSummary(period_debt=Decimal("99.90"),
@@ -129,3 +132,31 @@ def test_sync_ai_quota_leaves_mails_for_next_run(config):
 
     sync_mod._sync_bank(client, "INBOX", bank, None, config, storage, sync_mod.SyncReport(), ai=FakeAI())
     assert storage.is_mail_processed("icloud", "<n1>")
+
+
+def test_ai_category_suggestions_are_used(config):
+    from bankatakip.config import BankConfig
+    from tests.test_notifications import Client, _mail
+
+    config.categories = {"Market": ["market"]}
+    bank = BankConfig("Akbank", ["akbank.com"], ["ekstre"])
+    storage = Storage(config.database)
+    client = Client({b"2": _mail("<a>", "Akbank Kart harcamanız", "x"), b"1": _mail("<b>", "Akbank Kart harcamanız", "y")})
+    fake = FakeAI()
+    sync_mod._sync_bank(client, "INBOX", bank, None, config, storage, sync_mod.SyncReport(), ai=fake)
+    assert "Market" in fake.categories  # mevcut kategoriler yapay zekaya bildirilir
+    assert sorted(storage.used_categories()) == ["Evcil Hayvan", "Market"]
+
+
+def test_category_hint_in_request():
+    seen = {}
+
+    def handler(request):
+        seen["text"] = json.loads(request.content)["contents"][0]["parts"][0]["text"]
+        return gemini_reply({"items": [{"index": 0, "is_transaction": True, "transaction": {
+            "date": "2026-09-18", "description": "PETSHOP", "amount": "50", "direction": "harcama",
+            "category": "Evcil Hayvan"}}]})
+
+    [tx] = client_with(handler).extract_notifications([("s", "b", None)], categories=["Market", "Akaryakıt"])
+    assert "(Market, Akaryakıt)" in seen["text"]
+    assert tx.sector == "Evcil Hayvan"

@@ -11,6 +11,9 @@ class Transaction:
     description: str
     amount: Decimal  # pozitif: harcama/borç, negatif: ödeme/iade
     category: str | None = None
+    # Bankanın bildirdiği sektör veya yapay zekanın önerdiği kategori ("BENZIN ISTASYONU");
+    # hiçbir kategoriye uymazsa bu adla yeni kategori açılır
+    sector: str | None = None
 
 
 @dataclass

@@ -56,6 +56,8 @@ _TX_SCHEMA = {
         "description": {"type": "STRING", "description": "İşyeri / açıklama"},
         "amount": {"type": "STRING", "description": "Pozitif tutar, nokta ondalıklı: 1234.56"},
         "direction": {"type": "STRING", "enum": ["harcama", "cikis", "iade", "odeme", "gelir", "giris"]},
+        "category": {"type": "STRING", "nullable": True,
+                     "description": "Harcama kategorisi: mevcutlardan biri ya da kısa yeni bir Türkçe ad"},
     },
     "required": ["description", "amount", "direction"],
 }
@@ -109,6 +111,13 @@ Kredi kartı ekstresi ya da hesap hareket dökümü ise is_statement=true yap ve
 """
 
 
+def _categories_hint(categories: list[str] | None) -> str:
+    names = ", ".join(c for c in (categories or []) if c)
+    return ("\nHer işleme category ver: şu kategorilerden uygun olanı seç"
+            + (f" ({names})" if names else "")
+            + "; hiçbiri uymuyorsa kısa yeni bir Türkçe kategori adı yaz (ör. \"Akaryakıt\", \"Sağlık\").\n")
+
+
 # --- dönüşümler ---
 
 def _decimal(value) -> Decimal | None:
@@ -137,7 +146,9 @@ def _transaction(data: dict, fallback_date: date | None) -> Transaction | None:
     direction = str(data.get("direction", "harcama"))
     sign = -1 if direction in NEGATIVE else 1
     description = " ".join(str(data.get("description") or "").split()) or "İşlem"
-    return Transaction(date=tx_date, description=description[:200], amount=amount * sign)
+    category = " ".join(str(data.get("category") or "").split()) or None
+    return Transaction(date=tx_date, description=description[:200], amount=amount * sign,
+                       sector=category)
 
 
 # --- istemci ---
@@ -180,13 +191,13 @@ class GeminiClient:
                 raise AIError(f"Gemini yanıtı okunamadı: {exc}") from exc
         raise AIError(f"Kullanılabilir Gemini modeli bulunamadı ({last_error}).")
 
-    def extract_notifications(self, items: list[tuple[str, str, datetime | None]]
-                              ) -> list[Transaction | None]:
+    def extract_notifications(self, items: list[tuple[str, str, datetime | None]],
+                              categories: list[str] | None = None) -> list[Transaction | None]:
         """items: (konu, gövde metni, alınma zamanı). Aynı sırada işlem veya None döner."""
         results: list[Transaction | None] = [None] * len(items)
         for start in range(0, len(items), BATCH_SIZE):
             chunk = items[start:start + BATCH_SIZE]
-            text = NOTIFICATION_PROMPT + "\n\n".join(
+            text = NOTIFICATION_PROMPT + _categories_hint(categories) + "\n\n".join(
                 f"[{i}] Konu: {subject}\n{body[:MAX_TEXT]}" for i, (subject, body, _) in enumerate(chunk)
             )
             data = self._generate([{"text": text}], NOTIFICATION_SCHEMA)
@@ -200,10 +211,11 @@ class GeminiClient:
         return results
 
     def extract_statement(self, bank: str, subject: str, text: str | None = None,
-                          document: bytes | None = None, mime_type: str = "application/pdf"
-                          ) -> ParsedStatement | None:
+                          document: bytes | None = None, mime_type: str = "application/pdf",
+                          categories: list[str] | None = None) -> ParsedStatement | None:
         """Mail gövdesinden (text) veya ekten (document) ekstre çıkarır; ekstre değilse None."""
-        parts: list[dict] = [{"text": STATEMENT_PROMPT.format(bank=bank, subject=subject)}]
+        parts: list[dict] = [{"text": STATEMENT_PROMPT.format(bank=bank, subject=subject)
+                              + _categories_hint(categories)}]
         if document is not None:
             parts.append({"inline_data": {"mime_type": mime_type,
                                           "data": base64.b64encode(document).decode()}})

@@ -358,7 +358,8 @@ async function loadTransactions() {
   const spend = rows.filter((r) => r.amount > 0).reduce((s, r) => s + r.amount, 0);
   $("tx-summary").innerHTML = `${rows.length} işlem · harcama toplamı ${money(spend)}` +
     (txStatement ? ` · <a href="#" id="clear-statement">tek ekstre gösteriliyor, filtreyi kaldır</a>` : "");
-  const opts = me.categories.map((c) => `<option>${esc(c)}</option>`).join("");
+  const opts = me.categories.map((c) => `<option>${esc(c)}</option>`).join("") +
+    `<option value="__new">+ Yeni kategori…</option>`;
   $("tx-body").innerHTML = rows.length ? rows.map((r) => `<tr>
     <td>${fmtDate(r.date)}</td><td class="muted hide-sm">${esc(r.bank)}</td><td class="desc">${esc(r.description)}<select class="inline show-sm" data-tx="${r.id}">${opts}</select></td>
     <td class="hide-sm"><select class="inline" data-tx="${r.id}">${opts}</select></td>
@@ -375,7 +376,18 @@ $("f-q").addEventListener("input", () => { clearTimeout(txTimer); txTimer = setT
 $("tx-body").addEventListener("change", async (e) => {
   const sel = e.target.closest("[data-tx]");
   if (!sel) return;
-  document.querySelectorAll(`[data-tx="${sel.dataset.tx}"]`).forEach((s) => (s.value = sel.value));
+  if (sel.value === "__new") {
+    const name = (prompt("Yeni kategori adı:") || "").trim();
+    if (!name) { loadTransactions(); return; }
+    if (!me.categories.includes(name)) me.categories.splice(me.categories.length - 1, 0, name);
+    sel.insertAdjacentHTML("beforeend", `<option>${esc(name)}</option>`);
+    sel.value = name;
+    $("f-category").insertAdjacentHTML("beforeend", `<option>${esc(name)}</option>`);
+  }
+  document.querySelectorAll(`[data-tx="${sel.dataset.tx}"]`).forEach((s) => {
+    if (![...s.options].some((o) => o.value === sel.value)) s.insertAdjacentHTML("beforeend", `<option>${esc(sel.value)}</option>`);
+    s.value = sel.value;
+  });
   try {
     await api(`/api/transactions/${sel.dataset.tx}`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },

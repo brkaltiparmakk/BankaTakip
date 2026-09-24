@@ -56,10 +56,12 @@ banks:
 
 # İşlem açıklamasına göre otomatik kategori (büyük/küçük harf duyarsız)
 categories:
-  Market: ["migros", "a101", "bim", "şok", "carrefour", "macro"]
-  Yeme-İçme: ["yemeksepeti", "getir", "trendyol yemek", "starbucks", "restoran", "cafe"]
-  Ulaşım: ["shell", "opet", "bp", "petrol ofisi", "uber", "bitaksi", "istanbulkart"]
-  Alışveriş: ["trendyol", "hepsiburada", "amazon", "n11", "zara", "lc waikiki"]
-  Fatura: ["turkcell", "vodafone", "türk telekom", "turk telekom", "enerjisa", "igdaş", "iski"]
+  Market: ["migros", "a101", "bim", "şok", "carrefour", "macro", "market", "gıda", "süpermarket", "file"]
+  Yeme-İçme: ["yemeksepeti", "getir", "trendyol yemek", "starbucks", "restoran", "lokanta", "cafe", "kafe", "yemek", "fast food", "pastane", "fırın"]
+  Akaryakıt: ["benzin", "akaryakıt", "shell", "opet", "bp", "petrol ofisi", "total", "aytemiz", "lukoil"]
+  Ulaşım: ["uber", "bitaksi", "istanbulkart", "taksi", "otopark", "havayolu", "thy", "pegasus", "otobüs"]
+  Alışveriş: ["trendyol", "hepsiburada", "amazon", "n11", "zara", "lc waikiki", "giyim", "elektronik", "mobilya", "kozmetik"]
+  Sağlık: ["eczane", "hastane", "sağlık", "klinik", "diş"]
+  Fatura: ["turkcell", "vodafone", "türk telekom", "turk telekom", "enerjisa", "igdaş", "iski", "fatura"]
   Abonelik: ["netflix", "spotify", "youtube", "apple.com", "icloud", "disney"]
   Ödeme: ["ödeme", "odeme", "payment"]

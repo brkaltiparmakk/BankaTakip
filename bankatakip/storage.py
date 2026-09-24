@@ -358,6 +358,10 @@ class Storage:
         sql += " ORDER BY date DESC, id DESC"
         return self._all(sql, params)
 
+    def used_categories(self) -> list[str]:
+        rows = self._all("SELECT DISTINCT category FROM transactions WHERE category IS NOT NULL ORDER BY category")
+        return [r["category"] for r in rows]
+
     def update_transaction_category(self, tx_id: int, category: str | None) -> bool:
         cur = self._write("UPDATE transactions SET category = ? WHERE id = ?", (category or None, tx_id))
         return cur.rowcount > 0

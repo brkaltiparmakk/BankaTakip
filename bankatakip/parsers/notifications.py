@@ -28,6 +28,8 @@ AMOUNT_WITH_CURRENCY = re.compile(AMOUNT_RE.pattern + r"\s*(?:tl|try|₺)", re.I
 # başlangıcı, geriye doğru en yakın ayraçtır (virgül, satır sonu, saat, "tarihinde", "ile" ...).
 MERCHANT_BEFORE = re.compile(r"\s+(?:uye\s+)?isyerin(?:de|den)\b")
 MERCHANT_START = re.compile(r"(?:[,;\n]|\btarihinde\b|\bitibariyla\b|\bile\b|\d{1,2}:\d{2}(?:'?[a-z]+)?)\s*")
+# Akbank: "... 120,00 TL tutarında BENZIN ISTASYONU harcaması yapılmıştır." → işyeri değil sektör verir
+SECTOR_RE = re.compile(r"tutarinda\s+([^\n,.]{2,60}?)\s+harcamasi")
 # "Isyeri: MIGROS" / "Uye isyeri: MIGROS" / "Aciklama: MIGROS"
 MERCHANT_LABEL = re.compile(r"(?:uye\s+isyeri|isyeri(?:\s+adi)?|aciklama)\s*[:\-]\s*([^\n]{2,60})")
 
@@ -70,6 +72,11 @@ def _merchant(text: str) -> str | None:
     return None
 
 
+def _sector(text: str) -> str | None:
+    m = SECTOR_RE.search(tr_fold(text))
+    return _clean(text[m.start(1): m.end(1)]) or None if m else None
+
+
 def parse_notification(text: str, subject: str, received: datetime | None) -> Transaction | None:
     sign = notification_sign(subject)
     if sign is None:
@@ -83,5 +90,6 @@ def parse_notification(text: str, subject: str, received: datetime | None) -> Tr
         tx_date = received.date()
     if tx_date is None:
         return None
-    description = _merchant(text) or subject.strip()
-    return Transaction(date=tx_date, description=description, amount=amount * sign)
+    sector = _sector(text)
+    description = sector or _merchant(text) or subject.strip()
+    return Transaction(date=tx_date, description=description, amount=amount * sign, sector=sector)

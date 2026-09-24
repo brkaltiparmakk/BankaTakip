@@ -143,7 +143,8 @@ def me(user: str = User, config: Config = Depends(get_config),
             {"name": b.name, "senders": b.senders, "has_pdf_password": bool(b.pdf_password)}
             for b in config.banks
         ],
-        "categories": list(config.categories) + ["Diğer"],
+        "categories": list(dict.fromkeys(
+            list(config.categories) + storage.used_categories() + ["Diğer"])),
     }
 
 

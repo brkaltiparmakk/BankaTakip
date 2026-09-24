@@ -12,6 +12,7 @@ from .config import BankConfig, Config
 from .mail import MailClient
 from .ai import BATCH_SIZE, AIError, AIQuotaExceeded, GeminiClient, ai_enabled
 from .parsers import PdfPasswordError, detect_kind, extract_document_text, get_parser
+from .categories import CategoryResolver
 from .parsers.notifications import notification_sign, parse_notification
 from .storage import Storage, file_hash
 
@@ -66,6 +67,7 @@ def import_statement(
         return None, 0
 
     parser = get_parser(bank.name, config.categories)
+    resolver = CategoryResolver(parser, list(config.categories) + storage.used_categories())
     text = extract_document_text(content, bank.pdf_password)
     statement = parser.parse(text)
     if _is_empty(statement) and ai is not None:
@@ -73,9 +75,10 @@ def import_statement(
         is_pdf = detect_kind(content) == "pdf"
         ai_statement = ai.extract_statement(bank.name, filename,
                                             text=None if is_pdf else text,
-                                            document=content if is_pdf else None)
+                                            document=content if is_pdf else None,
+                                            categories=list(resolver.known.values()))
         if ai_statement is not None:
-            _categorize(ai_statement, parser)
+            _categorize(ai_statement, resolver)
             statement = ai_statement
 
     target = None
@@ -103,25 +106,27 @@ def _is_empty(statement) -> bool:
     return s.due_date is None and s.period_debt is None and not statement.transactions
 
 
-def _categorize(statement, parser) -> None:
+def _categorize(statement, resolver: CategoryResolver) -> None:
     for tx in statement.transactions:
-        tx.category = parser.categorize(tx.description)
+        resolver.apply(tx)
 
 
 def _import_body(mail, bank: BankConfig, config: Config, storage: Storage, account: str,
                  report: SyncReport, ai: "GeminiClient | None" = None) -> tuple[str, str | None]:
     text = mail.body_text
     parser = get_parser(bank.name, config.categories)
+    resolver = CategoryResolver(parser, list(config.categories) + storage.used_categories())
     statement = parser.parse(text)
     via = "mail gövdesinden"
     if _is_empty(statement):
         if ai is None or not text.strip():
             return "pdf_yok", _sample(text)
-        ai_statement = ai.extract_statement(bank.name, mail.subject, text=text)  # AIQuotaExceeded yukarı çıkar
+        ai_statement = ai.extract_statement(bank.name, mail.subject, text=text,  # AIQuotaExceeded yukarı çıkar
+                                            categories=list(resolver.known.values()))
         report.ai_used += 1
         if ai_statement is None or _is_empty(ai_statement):
             return "pdf_yok", "yapay zeka: ekstre değil · " + _sample(text, 300)
-        _categorize(ai_statement, parser)
+        _categorize(ai_statement, resolver)
         statement, via = ai_statement, "yapay zeka (mail gövdesi)"
     s = statement.summary
     if not statement.transactions and storage.has_same_summary(bank.name, s.due_date, s.period_debt):
@@ -210,6 +215,9 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
     def ai_usable() -> bool:
         return ai is not None and not report.ai_paused
 
+    resolver = CategoryResolver(get_parser(bank.name, config.categories),
+                                list(config.categories) + storage.used_categories())
+
     # Kuralların okuyamadığı bildirimler yapay zekaya toplu gönderilir (ücretsiz plan sınırı için)
     pending: list[tuple] = []
 
@@ -219,7 +227,8 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
         batch = pending[:]
         pending.clear()
         try:
-            txs = ai.extract_notifications([(m.subject, m.body_text, m.received) for _, m in batch])
+            txs = ai.extract_notifications([(m.subject, m.body_text, m.received) for _, m in batch],
+                                           categories=list(resolver.known.values()))
         except AIQuotaExceeded as exc:
             report.ai_limit_reached(str(exc))
             return  # işlenmiş işaretlenmedi: sonraki taramada tekrar denenir
@@ -227,15 +236,15 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
             report.errors.append(str(exc))
             txs = [None] * len(batch)
         report.ai_used += len(batch)
-        parser = get_parser(bank.name, config.categories)
         for (header, mail), tx in zip(batch, txs):
             if tx is None:
                 record(header, "bildirim_okunamadi", "yapay zeka: işlem bulunamadı · " + _sample(mail.body_text))
             else:
-                tx.category = parser.categorize(tx.description)
+                resolver.apply(tx)
                 storage.add_notification(bank.name, account, tx)
                 report.transactions_added += 1
-                record(header, "bildirim_eklendi", f"yapay zeka · {tx.description}: {tx.amount} TL")
+                record(header, "bildirim_eklendi",
+                       f"yapay zeka · {tx.description}: {tx.amount} TL · {tx.category or 'Diğer'}")
             storage.mark_mail_processed(account, header.message_id)
 
     # UID'ler geliş sırasına göre artar; en yeni maillerden başla ki güncel ekstreler önce gelsin
@@ -274,10 +283,11 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
             if tx is None:
                 record(header, "bildirim_okunamadi", _sample(mail.body_text))
             else:
-                tx.category = get_parser(bank.name, config.categories).categorize(tx.description)
+                resolver.apply(tx)
                 storage.add_notification(bank.name, account, tx)
                 report.transactions_added += 1
-                record(header, "bildirim_eklendi", f"{tx.description}: {tx.amount} TL · {_sample(mail.body_text, 300)}")
+                record(header, "bildirim_eklendi",
+                       f"{tx.description}: {tx.amount} TL · {tx.category or 'Diğer'} · {_sample(mail.body_text, 300)}")
             storage.mark_mail_processed(account, header.message_id)
             continue
 
