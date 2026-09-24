@@ -111,3 +111,35 @@ def test_akbank_style_flow(config):
     sample = [r for r in storage.list_mail_log() if r["message_id"] == "<n2>"][0]["detail"]
     assert "Akbank Mobil" in sample
     assert storage.reset_skipped_mails() == 1  # <m1>
+
+
+def test_account_movement_notifications(tmp_path):
+    from bankatakip.parsers.notifications import account_balance, notification_account
+
+    text = ("Değerli Akbanklı, 0123-0456789 numaralı hesabınıza 18.09.2026 tarihinde 2.500,00 TL "
+            "nakit girişi olmuştur. Açıklama: KIRA GELIRI. Hesabınızın güncel bakiyesi 12.345,67 TL'dir.")
+    tx = parse_notification(text, "Hesabınıza nakit girişi olmuştur", RECEIVED, "Akbank")
+    assert tx.amount == Decimal("-2500.00") and tx.description.startswith("KIRA GELIRI")
+    assert tx.sector == "Transfer" and not tx.weak
+    assert tx.account.key == "vadesiz"
+    assert account_balance(text) == Decimal("12345.67")
+    assert account_balance("Kullanılabilir bakiyeniz 5.000,00 TL") is None
+
+    out = parse_notification("18.09.2026 tarihinde hesabınızdan 300,00 TL çekilmiştir.",
+                             "ATM'den para çekme işleminiz", RECEIVED, "Akbank")
+    assert out.amount == Decimal("300.00") and out.description == "ATM para çekme"
+    assert notification_sign("Hesabınızdan nakit çıkışı olmuştur") == 1
+    # kredi kartı harcaması hâlâ karta yazılır
+    card = "5839 ile biten kartınızla 100,00 TL tutarında YEMEK harcaması. 5.000,00 TL limitiniz kalmıştır."
+    assert notification_account(card, "Kredi kartı harcamanız", "Akbank").kind == "kredi_karti"
+
+
+def test_rule_update_resets_skipped_mails_once(config, tmp_path):
+    storage = Storage(tmp_path / "r.db")
+    storage.mark_mail_processed("icloud", "<m1>")
+    storage.log_mail("icloud", "<m1>", "konu_eslesmedi", bank="Akbank",
+                     subject="Hesabınıza nakit girişi olmuştur")
+    assert sync_mod.apply_rule_updates(config, storage)
+    assert not storage.is_mail_processed("icloud", "<m1>")
+    assert not sync_mod.apply_rule_updates(config, storage)
+    storage.close()

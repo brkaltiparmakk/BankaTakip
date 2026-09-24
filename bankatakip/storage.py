@@ -170,6 +170,7 @@ class Storage:
         ("statements", "account_id", "INTEGER"),
         ("transactions", "balance", "TEXT"),
         ("transactions", "account_id", "INTEGER"),
+        ("transactions", "category_manual", "INTEGER"),
     ]
 
     def _migrate(self) -> None:
@@ -558,13 +559,33 @@ class Storage:
         return [r["category"] for r in rows]
 
     def update_transaction_category(self, tx_id: int, category: str | None) -> bool:
-        cur = self._write("UPDATE transactions SET category = ? WHERE id = ?", (category or None, tx_id))
+        # Elle seçilen kategori, kurallar değişince yapılan yeniden sınıflandırmada korunur
+        cur = self._write("UPDATE transactions SET category = ?, category_manual = 1 WHERE id = ?",
+                          (category or None, tx_id))
         return cur.rowcount > 0
+
+    def recategorize(self, decide) -> int:
+        """Elle değiştirilmemiş işlemlerin kategorisini decide(açıklama, eski kategori) ile
+        yeniden belirler. Değişen işlem sayısını döndürür."""
+        rows = self._all("SELECT id, description, category FROM transactions WHERE COALESCE(category_manual, 0) = 0")
+        changed = 0
+        try:
+            for row in rows:
+                new = decide(row["description"], row["category"])
+                if new != row["category"]:
+                    self._execute("UPDATE transactions SET category = ? WHERE id = ?", (new, row["id"]))
+                    changed += 1
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return changed
 
     def _report_rows(self) -> list[dict]:
         return self._all(
-            """SELECT t.date, t.description, t.amount, t.category, t.bank, s.kind
-               FROM transactions t LEFT JOIN statements s ON s.id = t.statement_id"""
+            """SELECT t.date, t.description, t.amount, t.category, t.bank, s.kind, a.kind AS account_kind
+               FROM transactions t LEFT JOIN statements s ON s.id = t.statement_id
+               LEFT JOIN accounts a ON a.id = t.account_id"""
         )
 
     @staticmethod
@@ -573,10 +594,11 @@ class Storage:
 
     @staticmethod
     def _is_income(row: dict, amount: Decimal) -> bool:
-        """Hesaplara gelen para: maaş ya da vadesiz dökümdeki girişler (kart ödemeleri hariç)."""
+        """Hesaplara gelen para: maaş ya da vadesiz hesaba girişler (döküm veya bildirim;
+        kart ödemeleri hariç)."""
         if amount >= 0 or row["category"] == "Kart Ödemesi":
             return False
-        return row["category"] == "Maaş" or row["kind"] == "vadesiz"
+        return row["category"] == "Maaş" or "vadesiz" in (row["kind"], row.get("account_kind"))
 
     def monthly_summary(self) -> list[tuple[str, str, Decimal]]:
         """(ay, kategori, net harcama). İadeler kendi kategorisinden düşülür; kendi hesaplar arası

@@ -33,3 +33,44 @@ def test_unknown_sector_creates_category_once():
     assert resolver.resolve("BILINMEYEN", None) is None                 # ipucu yoksa Diğer
     assert resolver.resolve("X", "Diğer") is None
     assert pretty_name("BENZIN ISTASYONU") == "Benzin İstasyonu"
+
+
+def test_akbank_sectors_map_to_readable_categories(tmp_path):
+    config = load_config(tmp_path / "yok.yaml")
+    resolver = CategoryResolver(get_parser("Akbank", config.categories), list(config.categories))
+    expected = {
+        "KUAFOR VE GUZELLIK MERKEZI": "Kişisel Bakım", "EGLENCE": "Eğlence", "SINEMA/TIYATRO": "Eğlence",
+        "BILGISAYAR/TEKNOLOJI": "Elektronik", "TELEKOMUNIKASYON": "Fatura", "KAMU": "Vergi ve Kamu",
+        "OTEL": "Seyahat", "HAVAYOLLARI": "Seyahat", "KITAP/KIRTASIYE": "Eğitim",
+    }
+    for sector, category in expected.items():
+        assert resolver.resolve(sector, sector) == category, sector
+    # "taksi" TAKSİTLİ'ye, "harç" harcamaya uymaz
+    assert resolver.resolve("TAKSİTLİ AVANS HES.KULL Taksitli Avans Hesap") == "Transfer"
+    assert resolver.resolve("TAKSI DURAGI") == "Ulaşım"
+    assert resolver.resolve("Banka kartı harcaması") is None
+    assert pretty_name("SINEMA/TIYATRO") == "Sinema / Tiyatro"
+
+
+def test_recategorize_keeps_manual_choices(tmp_path):
+    from datetime import date
+
+    from bankatakip.categories import recategorizer
+    from bankatakip.models import ParsedStatement, StatementSummary, Transaction
+    from bankatakip.storage import Storage
+
+    config = load_config(tmp_path / "yok.yaml")
+    storage = Storage(tmp_path / "t.db")
+    rows = [("EGLENCE", "Eglence"), ("TAKSİTLİ AVANS HES.KULL", "Ulaşım"), ("MIGROS", "Market"),
+            ("ABC LTD", "Sağlık"), ("NAKLIYE", "Nakliye")]
+    storage.save_statement(ParsedStatement(bank="Akbank", summary=StatementSummary(), transactions=[
+        Transaction(date(2026, 9, 1), d, Decimal("10"), c) for d, c in rows]), "h", source="gmail")
+    manual = storage.list_transactions(search="nakliye")[0]["id"]
+    storage.update_transaction_category(manual, "Nakliye")
+
+    parser = get_parser("Akbank", config.categories)
+    assert storage.recategorize(recategorizer(parser, config.categories)) == 2
+    got = {t["description"]: t["category"] for t in storage.list_transactions()}
+    assert got == {"EGLENCE": "Eğlence", "TAKSİTLİ AVANS HES.KULL": "Transfer", "MIGROS": "Market",
+                   "ABC LTD": "Sağlık", "NAKLIYE": "Nakliye"}
+    storage.close()

@@ -19,7 +19,20 @@ NOTIFICATION_RULES = [
     ("harcama iptal", -1),
     ("harcamaniz", 1),
     ("maas odemeniz", -1),
+    # Vadesiz hesap hareketleri (Akbank): "Hesabınıza nakit girişi olmuştur", "ATM'den para çekme işleminiz"
+    ("nakit girisi", -1),
+    ("nakit cikisi", 1),
+    ("para yatirma", -1),
+    ("para cekme", 1),
 ]
+# Hesap hareketi bildirimleri: işyeri yoktur, açıklama yoksa bu adlar kullanılır ve harcama sayılmaz
+MOVEMENT_DESCRIPTIONS = {
+    "nakit girisi": "Hesaba para girişi",
+    "nakit cikisi": "Hesaptan para çıkışı",
+    "para yatirma": "ATM para yatırma",
+    "para cekme": "ATM para çekme",
+}
+MOVEMENT_CATEGORY = "Transfer"
 
 # Tutarın hemen yanında para birimi olan eşleşmeler önceliklidir ("1.250,00 TL")
 AMOUNT_WITH_CURRENCY = re.compile(AMOUNT_RE.pattern + r"\s*(?:tl|try|₺)", re.IGNORECASE)
@@ -38,6 +51,8 @@ GENERIC_SECTORS = {"banka karti", "kredi karti", "kart"}
 # İngilizce biçimli tutar: "1,899.00 TL" (Akbank kredi kartı bildirimleri)
 AMOUNT_EN = re.compile(r"(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+)\.(\d{2})(?!\d)\s*(?:tl|try|₺)", re.IGNORECASE)
 LIMIT_RE = re.compile(r"(\S+)\s*tl\s+limitiniz\s+kalmistir")
+# "... güncel bakiyeniz 12.345,67 TL" (kullanılabilir bakiye ek hesap limitini içerebileceği için alınmaz)
+BALANCE_RE = re.compile(r"(?<!kullanilabilir )\bbakiye\w*[^0-9]{0,30}?(?=[-+]?\d)")
 # "Isyeri: MIGROS" / "Uye isyeri: MIGROS" / "Aciklama: MIGROS"
 MERCHANT_LABEL = re.compile(r"(?:uye\s+isyeri|isyeri(?:\s+adi)?|aciklama)\s*[:\-]\s*([^\n]{2,60})")
 
@@ -81,12 +96,33 @@ def remaining_limit(text: str) -> Decimal | None:
     return _parse_any_amount(text[m.start(1): m.end(0)]) if m else None
 
 
+def account_balance(text: str) -> Decimal | None:
+    """"... hesabınızın güncel bakiyesi 12.345,67 TL" → 12345.67"""
+    m = BALANCE_RE.search(tr_fold(text))
+    if not m:
+        return None
+    window = text[m.end(): m.end() + 30]
+    value = _parse_any_amount(window) if re.search(r"(?:tl|try|₺)", tr_fold(window)) else None
+    if value is not None and window.lstrip().startswith("-"):
+        value = -value
+    return value
+
+
+def movement_kind(subject: str) -> str | None:
+    """Vadesiz hesap hareketi bildirimi mi ("nakit girisi", "para cekme" ...)?"""
+    folded = tr_fold(subject)
+    return next((k for k in MOVEMENT_DESCRIPTIONS if k in folded), None)
+
+
 def notification_account(text: str, subject: str, bank: str) -> AccountRef:
     """Bildirimin ait olduğu hesap: kredi kartı harcaması kartın kendisine, banka kartı
-    harcaması bankanın vadesiz hesabına yazılır."""
+    harcaması ve hesap hareketleri bankanın vadesiz hesabına yazılır. Bildirimlerde hesap
+    numarası tutarlı yazılmadığı için vadesiz hareketler tek hesapta toplanır."""
     folded = tr_fold(subject + " " + text)
     is_credit = "kredi karti" in folded or "axess" in folded or "limitiniz" in folded
-    return detect_account(text, "kredi_karti" if is_credit else "vadesiz", bank)
+    if is_credit and not movement_kind(subject):
+        return detect_account(text, "kredi_karti", bank)
+    return AccountRef("vadesiz", "vadesiz", f"{bank} Vadesiz")
 
 
 def _clean(value: str) -> str:
@@ -142,8 +178,14 @@ def parse_notification(text: str, subject: str, received: datetime | None,
         tx_date = received.date()
     if tx_date is None:
         return None
-    sector = _sector(text)
-    description = sector or _merchant(text) or _generic_description(text)
+    movement = movement_kind(subject)
+    if movement:
+        # Hesap hareketinde kategori ipucu "Transfer": açıklama başka bir kurala uymazsa harcama sayılmaz
+        sector = MOVEMENT_CATEGORY
+        description = _merchant(text) or MOVEMENT_DESCRIPTIONS[movement]
+    else:
+        sector = _sector(text)
+        description = sector or _merchant(text) or _generic_description(text)
     tx = Transaction(date=tx_date, description=description or subject.strip(), amount=amount * sign,
                      sector=sector, account=notification_account(text, subject, bank) if bank else None)
     # İşyeri/sektör bulunamadıysa sonuç zayıftır: yapay zeka açıksa ona sorulur

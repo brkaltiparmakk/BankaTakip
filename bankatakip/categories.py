@@ -21,8 +21,10 @@ def _tr_capitalize(word: str) -> str:
 
 
 def pretty_name(text: str) -> str:
-    """"BENZIN ISTASYONU" → "Benzin İstasyonu", "GİYİM MAĞAZASI" → "Giyim Mağazası"."""
-    return " ".join(_tr_capitalize(w) for w in text.split())[:40]
+    """"BENZIN ISTASYONU" → "Benzin İstasyonu", "GİYİM MAĞAZASI" → "Giyim Mağazası",
+    "SINEMA/TIYATRO" → "Sinema / Tiyatro"."""
+    parts = [" ".join(_tr_capitalize(w) for w in part.split()) for part in text.split("/")]
+    return " / ".join(p for p in parts if p)[:40]
 
 
 class CategoryResolver:
@@ -51,3 +53,28 @@ class CategoryResolver:
 
     def apply(self, tx) -> None:
         tx.category = self.resolve(tx.description, tx.sector)
+
+
+def recategorizer(parser: GenericParser, categories: dict[str, list[str]]):
+    """Kurallar değiştiğinde eski kayıtlar için karar fonksiyonu (Storage.recategorize ile).
+
+    - Anahtar kelimeye uyan işlem o kategoriye geçer.
+    - Tanımlı bir kategorideyken artık hiçbir kurala uymuyorsa: eski eşleşme gevşek alt-dize
+      kuralından geldiyse ("taksi" → "TAKSİTLİ") kategorisi kaldırılır, yoksa (ör. yapay zeka
+      ataması) korunur.
+    - Bankanın sektöründen açılmış kategoride açıklama sektör adıdır; yeni kurallarla yeniden
+      adlandırılır ("EGLENCE" → "Eğlence" kategorisi).
+    """
+    resolver = CategoryResolver(parser, list(categories))
+
+    def decide(description: str, old: str | None) -> str | None:
+        new = parser.categorize(description)
+        if new is not None or old is None:
+            return new
+        if old in categories:
+            folded = tr_fold(description)
+            loose = any(tr_fold(k.strip()) in folded for k in categories[old] if k.strip())
+            return None if loose else old
+        return resolver.resolve(description, description)
+
+    return decide

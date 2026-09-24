@@ -12,10 +12,11 @@ from .config import BankConfig, Config
 from .mail import MailClient
 from .ai import BATCH_SIZE, AIError, AIQuotaExceeded, GeminiClient, ai_enabled
 from .parsers import PdfPasswordError, detect_kind, extract_document_text, get_parser
-from .categories import CategoryResolver
-from .parsers.generic import detect_account
+from .categories import CategoryResolver, recategorizer
+from .parsers.generic import GenericParser, detect_account
 from .parsers.notifications import (
-    has_amount, notification_account, notification_sign, parse_notification, remaining_limit,
+    account_balance, has_amount, notification_account, notification_sign, parse_notification,
+    remaining_limit,
 )
 from .storage import Storage, file_hash
 
@@ -107,14 +108,35 @@ def _sample(text: str, limit: int = 800) -> str:
 
 
 def _record_limit(mail, bank: BankConfig, storage: Storage) -> None:
-    """"... 199,387.16 TL limitiniz kalmıştır" → kartın kullanılabilir limit geçmişine yazılır."""
-    limit = remaining_limit(mail.body_text)
-    if limit is None:
-        return
+    """Bildirimdeki kalan limit ("199,387.16 TL limitiniz kalmıştır") kartın, hesap bakiyesi
+    ("güncel bakiyeniz 12.345,67 TL") vadesiz hesabın geçmişine yazılır."""
     ref = notification_account(mail.body_text, mail.subject, bank.name)
     as_of = (mail.received or datetime.now()).isoformat(timespec="seconds")
-    storage.add_snapshot(storage.account_id(bank.name, ref), as_of, available_limit=limit,
-                         source="bildirim", commit=True)
+    if ref.kind == "kredi_karti":
+        limit = remaining_limit(mail.body_text)
+        if limit is not None:
+            storage.add_snapshot(storage.account_id(bank.name, ref), as_of, available_limit=limit,
+                                 source="bildirim", commit=True)
+    else:
+        balance = account_balance(mail.body_text)
+        if balance is not None:
+            storage.add_snapshot(storage.account_id(bank.name, ref), as_of, balance=balance,
+                                 source="bildirim", commit=True)
+
+
+# Okuma kuralları değiştiğinde artırılır: atlanan mailler yeniden taranır ve elle
+# değiştirilmemiş işlemlerin kategorileri yeni kurallarla güncellenir.
+RULES_VERSION = "2"
+
+
+def apply_rule_updates(config: Config, storage: Storage) -> bool:
+    if storage.get_meta("rules_version") == RULES_VERSION:
+        return False
+    storage.reset_skipped_mails()
+    parser = GenericParser(categories=config.categories)
+    storage.recategorize(recategorizer(parser, config.categories))
+    storage.set_meta("rules_version", RULES_VERSION)
+    return True
 
 
 def _is_empty(statement) -> bool:
@@ -179,6 +201,7 @@ def sync(config: Config, storage: Storage, since: date | None = None,
     report.incomplete=True döner; işlenen mailler kaydedildiği için sonraki çalıştırma
     kaldığı yerden devam eder."""
     report = SyncReport()
+    apply_rule_updates(config, storage)
     deadline = time.monotonic() + time_budget if time_budget else None
     ai = GeminiClient() if ai_enabled() else None
     if not config.accounts:

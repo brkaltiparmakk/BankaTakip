@@ -138,9 +138,11 @@ def detect_account(text: str, kind: str, bank: str) -> AccountRef:
 
 def _keyword_pattern(keyword: str) -> re.Pattern:
     """Anahtar kelime bir kelimenin başında eşleşmeli ("bim" → "BİM", "BIM A.Ş." ama
-    "IBIMAX" değil). 3 harf ve daha kısa kelimeler tam kelime olarak aranır ("bp")."""
+    "IBIMAX" değil). 3 harf ve daha kısa kelimeler ile sonunda boşluk bırakılanlar tam kelime
+    olarak aranır ("bp", "taksi " → "TAKSI" ama "TAKSITLI" değil)."""
+    whole = keyword.endswith(" ")
     keyword = tr_fold(keyword.strip())
-    end = r"(?![a-z0-9])" if len(keyword) <= 3 else ""
+    end = r"(?![a-z0-9])" if whole or len(keyword) <= 3 else ""
     return re.compile(r"(?<![a-z0-9])" + re.escape(keyword) + end)
 
 
