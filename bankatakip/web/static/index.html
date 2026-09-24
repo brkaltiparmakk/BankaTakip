@@ -429,7 +429,7 @@ $("sync-btn").addEventListener("click", async () => {
   if (syncing) { stopRequested = true; btn.textContent = "Durduruluyor…"; return; }
   syncing = true; stopRequested = false;
   btn.textContent = "Durdur";
-  const total = { mails: 0, statements: 0, transactions: 0, errors: new Set() };
+  const total = { mails: 0, statements: 0, transactions: 0, ai: 0, errors: new Set() };
   let round = 0, last = null;
   try {
     // Süre sınırı yüzünden tarama parça parça yapılır; bitene kadar kendiliğinden devam eder.
@@ -438,14 +438,15 @@ $("sync-btn").addEventListener("click", async () => {
       $("sync-result").innerHTML = `<div class="notice">Taranıyor… (${round}. tur) · şu ana kadar ${total.statements} yeni ekstre, ${total.transactions} işlem</div>`;
       last = await api("/api/sync", { method: "POST" });
       total.mails += last.mails_checked; total.statements += last.statements_added;
-      total.transactions += last.transactions_added;
+      total.transactions += last.transactions_added; total.ai += last.ai_used || 0;
       last.errors.forEach((e) => total.errors.add(e));
       loadMailLog();
     } while (last.incomplete && !stopRequested && round < 100);
     const status = last.incomplete
       ? `<br><strong>Tarama durduruldu; "Şimdi tara" ile kaldığı yerden devam eder.</strong>`
       : total.errors.size ? `<br>Tarama bitti, aşağıdaki hatalara bakın:` : `<br>Tarama tamamlandı.`;
-    $("sync-result").innerHTML = `<div class="notice">${round} turda ${total.statements} yeni ekstre, ${total.transactions} işlem eklendi.${status}` +
+    const aiNote = total.ai ? ` Yapay zeka ${total.ai} maili okudu.` : "";
+    $("sync-result").innerHTML = `<div class="notice">${round} turda ${total.statements} yeni ekstre, ${total.transactions} işlem eklendi.${aiNote}${status}` +
       (total.errors.size ? `<ul>${[...total.errors].map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : "") + `</div>`;
     me = await api("/api/me");
     renderSettings();

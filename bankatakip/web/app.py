@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from ..config import Config, ConfigError, load_config
+from ..ai import AIError, GeminiClient, ai_enabled
 from ..parsers import PdfPasswordError, detect_kind
 from ..storage import Storage, is_postgres_url
 from ..reminders import send_due_reminders
@@ -120,6 +121,8 @@ def setup_warnings(config: Config) -> list[str]:
     for account in config.accounts:
         if not os.environ.get(account.password_env):
             warnings.append(f"{account.name} için {account.password_env} tanımlı değil.")
+    if not ai_enabled():
+        warnings.append("GEMINI_API_KEY tanımlı değil: kuralların okuyamadığı mailler için yapay zeka kapalı.")
     if auth.on_vercel() and not os.environ.get("CRON_SECRET"):
         warnings.append("CRON_SECRET tanımlı değil: otomatik günlük tarama çalışmaz.")
     return warnings
@@ -261,8 +264,9 @@ async def upload(
         raise HTTPException(400, "Sadece PDF veya Excel (.xls/.xlsx) ekstre yüklenebilir.")
     try:
         statement_id, count = import_pdf(content, bank_cfg, config, storage,
-                                         source="manuel", filename=file.filename or "ekstre.pdf")
-    except PdfPasswordError as exc:
+                                         source="manuel", filename=file.filename or "ekstre.pdf",
+                                         ai=GeminiClient() if ai_enabled() else None)
+    except (PdfPasswordError, AIError) as exc:
         raise HTTPException(400, str(exc))
     except Exception as exc:
         raise HTTPException(400, f"PDF okunamadı: {exc}")

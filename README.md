@@ -79,6 +79,18 @@ Değişkenleri ekledikten sonra **Deployments → Redeploy** yapın.
 - Banka listesini veya kategorileri değiştirmek için `BANKATAKIP_CONFIG` değişkenine
   `config.example.yaml` biçiminde YAML yazabilirsiniz; yoksa varsayılanlar kullanılır.
 
+### Yapay zeka (Gemini, ücretsiz)
+Bankaların mail/PDF biçimleri farklı olduğu için kurallar her şeyi okuyamayabilir. `GEMINI_API_KEY`
+tanımlıysa kuralların okuyamadığı ekstre ve harcama bildirimi mailleri Google Gemini'ye gönderilip
+okunur (PDF'ler dosya olarak gider, taranmış PDF'ler de okunur). Bildirimler 20'şerli gruplar halinde
+gönderilir; ücretsiz planın sınırı dolarsa kalan mailler sonraki taramada okunur.
+
+1. https://aistudio.google.com/apikey → **Create API key** (ücretsiz).
+2. Vercel'de `GEMINI_API_KEY` olarak ekleyip redeploy edin.
+
+**Gizlilik:** Ücretsiz planda Google gönderilen içeriği ürünlerini geliştirmek için kullanabilir;
+yani okunamayan banka mailleri Google'a gider. İstemezseniz anahtarı tanımlamayın.
+
 ### Güvenlik notları
 - Mail uygulama şifreleri yalnızca Vercel ortam değişkenlerinde durur, veritabanına yazılmaz.
   Uygulama maillere salt okunur bağlanır.
