@@ -80,6 +80,7 @@ class FakeAI:
         self.quota_after = quota_after
 
     def extract_notifications(self, items, categories=None):
+        self.categories = categories
         self.calls += 1
         if self.quota_after is not None and self.calls > self.quota_after:
             raise AIQuotaExceeded("sınır doldu")
@@ -104,8 +105,8 @@ def test_sync_uses_ai_as_fallback(config):
     client = Client({
         b"4": _mail("<s>", "Akbank Kart Hesap Özetiniz", "Borç bilgileriniz tabloda"),
         b"3": _mail("<k>", "Axess'le Ekstrenizi Taksit Taksit Ödeyin", "kampanya"),
-        b"2": _mail("<n1>", "Akbank Kart harcamanız", "biçimi bilinmeyen bildirim"),
-        b"1": _mail("<n2>", "Akbank Kart harcamanız", "biçimi bilinmeyen bildirim 2"),
+        b"2": _mail("<n1>", "Akbank Kart harcamanız", "Kartınızla 45,00 TL işlem yapıldı"),
+        b"1": _mail("<n2>", "Akbank Kart harcamanız", "Kartınızla 12,50 TL işlem yapıldı"),
     })
     fake = FakeAI()
     report = sync_mod.SyncReport()
@@ -124,7 +125,7 @@ def test_sync_ai_quota_leaves_mails_for_next_run(config):
 
     bank = BankConfig("Akbank", ["akbank.com"], ["ekstre"])
     storage = Storage(config.database)
-    client = Client({b"1": _mail("<n1>", "Akbank Kart harcamanız", "bilinmeyen")})
+    client = Client({b"1": _mail("<n1>", "Akbank Kart harcamanız", "Kartınızla 45,00 TL işlem")})
     report = sync_mod.SyncReport()
     sync_mod._sync_bank(client, "INBOX", bank, None, config, storage, report, ai=FakeAI(quota_after=0))
     assert report.ai_paused and report.errors == ["sınır doldu"]
@@ -141,7 +142,7 @@ def test_ai_category_suggestions_are_used(config):
     config.categories = {"Market": ["market"]}
     bank = BankConfig("Akbank", ["akbank.com"], ["ekstre"])
     storage = Storage(config.database)
-    client = Client({b"2": _mail("<a>", "Akbank Kart harcamanız", "x"), b"1": _mail("<b>", "Akbank Kart harcamanız", "y")})
+    client = Client({b"2": _mail("<a>", "Akbank Kart harcamanız", "10,00 TL"), b"1": _mail("<b>", "Akbank Kart harcamanız", "20,00 TL")})
     fake = FakeAI()
     sync_mod._sync_bank(client, "INBOX", bank, None, config, storage, sync_mod.SyncReport(), ai=fake)
     assert "Market" in fake.categories  # mevcut kategoriler yapay zekaya bildirilir

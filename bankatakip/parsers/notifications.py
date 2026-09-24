@@ -10,8 +10,8 @@ import re
 from datetime import datetime
 from decimal import Decimal
 
-from ..models import Transaction
-from .generic import AMOUNT_RE, DATE_RE, _amount_from_match, parse_date, tr_fold
+from ..models import AccountRef, Transaction
+from .generic import AMOUNT_RE, DATE_RE, _amount_from_match, detect_account, parse_date, tr_fold
 
 # (konuda aranacak ifade, işaret): +1 harcama, -1 iade/iptal/gelir. Sıra önemli: özelden genele.
 NOTIFICATION_RULES = [
@@ -28,8 +28,16 @@ AMOUNT_WITH_CURRENCY = re.compile(AMOUNT_RE.pattern + r"\s*(?:tl|try|₺)", re.I
 # başlangıcı, geriye doğru en yakın ayraçtır (virgül, satır sonu, saat, "tarihinde", "ile" ...).
 MERCHANT_BEFORE = re.compile(r"\s+(?:uye\s+)?isyerin(?:de|den)\b")
 MERCHANT_START = re.compile(r"(?:[,;\n]|\btarihinde\b|\bitibariyla\b|\bile\b|\d{1,2}:\d{2}(?:'?[a-z]+)?)\s*")
-# Akbank: "... 120,00 TL tutarında BENZIN ISTASYONU harcaması yapılmıştır." → işyeri değil sektör verir
-SECTOR_RE = re.compile(r"tutarinda\s+([^\n,.]{2,60}?)\s+harcamasi")
+# Akbank işyeri yerine sektör verir:
+#   "... 120,00 TL tutarında BENZIN ISTASYONU harcaması yapılmıştır."
+#   "... 512,40 TL tutarında GIDA VE MARKET kategorisinde temassız ödeme işlemi yapılmıştır."
+#   "... yapılan 360,00 TL tutarlı EGLENCE harcaması iptal edilmiştir."
+SECTOR_RE = re.compile(r"tutar(?:inda|li)\s+([^\n,.]{2,60}?)\s+(?:harcamasi|kategorisinde)")
+# Kart türünü belirten, sektör olmayan ifadeler
+GENERIC_SECTORS = {"banka karti", "kredi karti", "kart"}
+# İngilizce biçimli tutar: "1,899.00 TL" (Akbank kredi kartı bildirimleri)
+AMOUNT_EN = re.compile(r"(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+)\.(\d{2})(?!\d)\s*(?:tl|try|₺)", re.IGNORECASE)
+LIMIT_RE = re.compile(r"(\S+)\s*tl\s+limitiniz\s+kalmistir")
 # "Isyeri: MIGROS" / "Uye isyeri: MIGROS" / "Aciklama: MIGROS"
 MERCHANT_LABEL = re.compile(r"(?:uye\s+isyeri|isyeri(?:\s+adi)?|aciklama)\s*[:\-]\s*([^\n]{2,60})")
 
@@ -42,12 +50,43 @@ def notification_sign(subject: str) -> int | None:
     return None
 
 
+def _parse_any_amount(text: str) -> Decimal | None:
+    """Türkçe ("1.899,00 TL") veya İngilizce ("1,899.00 TL") biçimli ilk tutar."""
+    m = AMOUNT_WITH_CURRENCY.search(text)
+    if m:
+        value = _amount_from_match(m)
+        return abs(value) if value is not None else None
+    m = AMOUNT_EN.search(text)
+    if m:
+        return Decimal(f"{m.group(1).replace(',', '')}.{m.group(2)}")
+    m = AMOUNT_RE.search(text)
+    if m:
+        value = _amount_from_match(m)
+        return abs(value) if value is not None else None
+    return None
+
+
 def _amount(text: str) -> Decimal | None:
-    m = AMOUNT_WITH_CURRENCY.search(text) or AMOUNT_RE.search(text)
-    if not m:
-        return None
-    value = _amount_from_match(m)
-    return abs(value) if value is not None else None
+    return _parse_any_amount(text)
+
+
+def has_amount(text: str) -> bool:
+    return _parse_any_amount(text) is not None
+
+
+def remaining_limit(text: str) -> Decimal | None:
+    """"199,387.16 TL limitiniz kalmıştır" → 199387.16"""
+    folded = tr_fold(text)
+    m = LIMIT_RE.search(folded)
+    return _parse_any_amount(text[m.start(1): m.end(0)]) if m else None
+
+
+def notification_account(text: str, subject: str, bank: str) -> AccountRef:
+    """Bildirimin ait olduğu hesap: kredi kartı harcaması kartın kendisine, banka kartı
+    harcaması bankanın vadesiz hesabına yazılır."""
+    folded = tr_fold(subject + " " + text)
+    is_credit = "kredi karti" in folded or "axess" in folded or "limitiniz" in folded
+    return detect_account(text, "kredi_karti" if is_credit else "vadesiz", bank)
 
 
 def _clean(value: str) -> str:
@@ -74,10 +113,23 @@ def _merchant(text: str) -> str | None:
 
 def _sector(text: str) -> str | None:
     m = SECTOR_RE.search(tr_fold(text))
-    return _clean(text[m.start(1): m.end(1)]) or None if m else None
+    if not m:
+        return None
+    value = _clean(text[m.start(1): m.end(1)])
+    return None if not value or tr_fold(value) in GENERIC_SECTORS else value
 
 
-def parse_notification(text: str, subject: str, received: datetime | None) -> Transaction | None:
+def _generic_description(text: str) -> str | None:
+    folded = tr_fold(text)
+    if "kredi karti harcamasi" in folded or "kredi karti kategorisinde" in folded:
+        return "Kredi kartı harcaması"
+    if "banka karti" in folded:
+        return "Banka kartı harcaması"
+    return None
+
+
+def parse_notification(text: str, subject: str, received: datetime | None,
+                       bank: str = "") -> Transaction | None:
     sign = notification_sign(subject)
     if sign is None:
         return None
@@ -91,5 +143,9 @@ def parse_notification(text: str, subject: str, received: datetime | None) -> Tr
     if tx_date is None:
         return None
     sector = _sector(text)
-    description = sector or _merchant(text) or subject.strip()
-    return Transaction(date=tx_date, description=description, amount=amount * sign, sector=sector)
+    description = sector or _merchant(text) or _generic_description(text)
+    tx = Transaction(date=tx_date, description=description or subject.strip(), amount=amount * sign,
+                     sector=sector, account=notification_account(text, subject, bank) if bank else None)
+    # İşyeri/sektör bulunamadıysa sonuç zayıftır: yapay zeka açıksa ona sorulur
+    tx.weak = description is None
+    return tx

@@ -228,6 +228,63 @@ def run_sync(user: str = User, config: Config = Depends(get_config),
     return sync(config, storage, time_budget=_time_budget()).as_dict()
 
 
+def _num(value) -> float | None:
+    return float(value) if value is not None else None
+
+
+def _account_json(acc: dict) -> dict:
+    snap, limit, last = acc["snapshot"], acc["limit"], acc["last_statement"]
+    return {
+        "id": acc["id"], "bank": acc["bank"], "name": acc["name"], "kind": acc["kind"],
+        "estimate": _num(acc["estimate"]),
+        "since": acc["since"], "in_since": _num(acc["in_since"]), "out_since": _num(acc["out_since"]),
+        "tx_since": acc["tx_since"],
+        "snapshot": snap and {"as_of": snap["as_of"], "balance": _num(Decimal(snap["balance"])),
+                              "source": snap["source"]},
+        "limit": limit and {"as_of": limit["as_of"], "available_limit": _num(Decimal(limit["available_limit"])),
+                            "source": limit["source"]},
+        "last_statement": last and {"due_date": last["due_date"], "period_debt": _dec(last["period_debt"]),
+                                    "minimum_payment": _dec(last["minimum_payment"])},
+    }
+
+
+@app.get("/api/accounts")
+def accounts(user: str = User, storage: Storage = Depends(get_storage)):
+    return {
+        "accounts": [_account_json(a) for a in storage.accounts_overview()],
+        "flows": [{"month": f["month"], "in": _num(f["in"]), "out": _num(f["out"])}
+                  for f in storage.monthly_flows()][-12:],
+    }
+
+
+class BalanceInput(BaseModel):
+    balance: Decimal
+    as_of: date | None = None
+
+
+@app.post("/api/accounts/{account_id}/balance", dependencies=[SameOrigin])
+def set_balance(account_id: int, body: BalanceInput, user: str = User,
+                storage: Storage = Depends(get_storage)):
+    if not any(a["id"] == account_id for a in storage.accounts_overview()):
+        raise HTTPException(404, "Hesap bulunamadı.")
+    storage.add_snapshot(account_id, (body.as_of or date.today()).isoformat(), balance=body.balance,
+                         source="manuel", commit=True)
+    return {"ok": True}
+
+
+class AccountUpdate(BaseModel):
+    name: str
+
+
+@app.patch("/api/accounts/{account_id}", dependencies=[SameOrigin])
+def update_account(account_id: int, body: AccountUpdate, user: str = User,
+                   storage: Storage = Depends(get_storage)):
+    name = " ".join(body.name.split())[:60]
+    if not name or not storage.rename_account(account_id, name):
+        raise HTTPException(404, "Hesap bulunamadı.")
+    return {"ok": True}
+
+
 @app.get("/api/mail-log")
 def mail_log(user: str = User, storage: Storage = Depends(get_storage)):
     return storage.list_mail_log()

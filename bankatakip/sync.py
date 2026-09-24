@@ -13,7 +13,10 @@ from .mail import MailClient
 from .ai import BATCH_SIZE, AIError, AIQuotaExceeded, GeminiClient, ai_enabled
 from .parsers import PdfPasswordError, detect_kind, extract_document_text, get_parser
 from .categories import CategoryResolver
-from .parsers.notifications import notification_sign, parse_notification
+from .parsers.generic import detect_account
+from .parsers.notifications import (
+    has_amount, notification_account, notification_sign, parse_notification, remaining_limit,
+)
 from .storage import Storage, file_hash
 
 log = logging.getLogger(__name__)
@@ -79,6 +82,7 @@ def import_statement(
                                             categories=list(resolver.known.values()))
         if ai_statement is not None:
             _categorize(ai_statement, resolver)
+            ai_statement.account = detect_account(text or filename, ai_statement.kind, bank.name)
             statement = ai_statement
 
     target = None
@@ -93,12 +97,24 @@ def import_statement(
         statement, digest, source=source, file_path=str(target) if target else None,
         received_at=received_at,
     )
-    return statement_id, len(statement.transactions)
+    saved = statement.saved_transactions
+    return statement_id, len(statement.transactions) if saved is None else saved
 
 
 def _sample(text: str, limit: int = 800) -> str:
     """Kayıt için gövde örneği: okunamayan mailin biçimini sonradan inceleyebilmek için."""
     return " ".join(text.split())[:limit]
+
+
+def _record_limit(mail, bank: BankConfig, storage: Storage) -> None:
+    """"... 199,387.16 TL limitiniz kalmıştır" → kartın kullanılabilir limit geçmişine yazılır."""
+    limit = remaining_limit(mail.body_text)
+    if limit is None:
+        return
+    ref = notification_account(mail.body_text, mail.subject, bank.name)
+    as_of = (mail.received or datetime.now()).isoformat(timespec="seconds")
+    storage.add_snapshot(storage.account_id(bank.name, ref), as_of, available_limit=limit,
+                         source="bildirim", commit=True)
 
 
 def _is_empty(statement) -> bool:
@@ -127,6 +143,7 @@ def _import_body(mail, bank: BankConfig, config: Config, storage: Storage, accou
         if ai_statement is None or _is_empty(ai_statement):
             return "pdf_yok", "yapay zeka: ekstre değil · " + _sample(text, 300)
         _categorize(ai_statement, resolver)
+        ai_statement.account = detect_account(text, ai_statement.kind, bank.name)
         statement, via = ai_statement, "yapay zeka (mail gövdesi)"
     s = statement.summary
     if not statement.transactions and storage.has_same_summary(bank.name, s.due_date, s.period_debt):
@@ -136,8 +153,8 @@ def _import_body(mail, bank: BankConfig, config: Config, storage: Storage, accou
     if statement_id is None:
         return "zaten_var", None
     report.statements_added += 1
-    report.transactions_added += len(statement.transactions)
-    return "eklendi", f"{via}: {len(statement.transactions)} işlem · {_sample(text, 300)}"
+    report.transactions_added += statement.saved_transactions or 0
+    return "eklendi", f"{via}: {statement.saved_transactions or 0} işlem · {_sample(text, 300)}"
 
 
 def _account_since(config: Config, storage: Storage, account: str) -> date | None:
@@ -241,6 +258,7 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
                 record(header, "bildirim_okunamadi", "yapay zeka: işlem bulunamadı · " + _sample(mail.body_text))
             else:
                 resolver.apply(tx)
+                tx.account = notification_account(mail.body_text, mail.subject, bank.name)
                 storage.add_notification(bank.name, account, tx)
                 report.transactions_added += 1
                 record(header, "bildirim_eklendi",
@@ -274,8 +292,14 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
             continue
 
         if is_notification and not is_statement:
-            tx = parse_notification(mail.body_text, mail.subject, mail.received)
-            if tx is None and ai_usable():
+            _record_limit(mail, bank, storage)
+            if not has_amount(mail.body_text):
+                # ör. "Maaş ödemeniz gerçekleşmiştir" maillerinde tutar yazmıyor; okunacak işlem yok
+                record(header, "bilgi", "tutar içermiyor · " + _sample(mail.body_text, 300))
+                storage.mark_mail_processed(account, header.message_id)
+                continue
+            tx = parse_notification(mail.body_text, mail.subject, mail.received, bank.name)
+            if (tx is None or tx.weak) and ai_usable():
                 pending.append((header, mail))
                 if len(pending) >= BATCH_SIZE:
                     flush_pending()

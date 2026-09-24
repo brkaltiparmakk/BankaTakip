@@ -97,6 +97,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
     <div class="brand"><span>₺</span>BankaTakip</div>
     <nav id="nav">
       <button data-tab="overview" class="active">Özet</button>
+      <button data-tab="accounts">Hesaplar</button>
       <button data-tab="statements">Ekstreler</button>
       <button data-tab="transactions">İşlemler</button>
       <button data-tab="settings">Tarama</button>
@@ -133,6 +134,15 @@ dd { margin: 0; overflow-wrap: anywhere; }
       <div class="card"><h2>Son ödeme tarihleri</h2><div id="upcoming"></div></div>
     </div>
     <div class="card" style="margin-top:14px"><h2>Bu ay kategoriler</h2><div id="cat-list"></div></div>
+  </section>
+
+  <section id="tab-accounts" hidden>
+    <div class="grid" id="accounts-grid"></div>
+    <div class="card">
+      <h2>Aylık gelen / giden</h2>
+      <p class="muted" style="font-size:13px;margin-top:-6px">Transferler ve kart ödemeleri dahil tüm para hareketi.</p>
+      <div class="chart-box"><canvas id="flows-chart"></canvas></div>
+    </div>
   </section>
 
   <section id="tab-statements" hidden>
@@ -263,7 +273,7 @@ function showTab(name) {
   document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll("section").forEach((s) => (s.hidden = s.id !== "tab-" + name));
   flash("");
-  ({ overview: loadOverview, statements: loadStatements, transactions: loadTransactions, settings: renderSettings })[name]();
+  ({ overview: loadOverview, accounts: loadAccounts, statements: loadStatements, transactions: loadTransactions, settings: renderSettings })[name]();
 }
 
 function daysUntil(iso) {
@@ -296,6 +306,90 @@ async function loadOverview() {
 
   drawChart(o.monthly);
 }
+
+const KIND = { vadesiz: "Vadesiz hesap", kredi_karti: "Kredi kartı" };
+const SOURCE = { "döküm": "hesap dökümü", ekstre: "ekstre", bildirim: "bildirim", manuel: "elle girildi" };
+let flowsChart = null;
+
+function parseTL(text) {
+  // "12.345,67" veya "12345.67" → 12345.67
+  let t = String(text || "").replace(/[^\d.,-]/g, "");
+  if (t.includes(",")) t = t.replace(/\./g, "").replace(",", ".");
+  const n = Number(t);
+  return Number.isFinite(n) ? n : null;
+}
+
+async function loadAccounts() {
+  const data = await api("/api/accounts");
+  $("accounts-grid").innerHTML = data.accounts.length ? data.accounts.map((a) => {
+    const snap = a.snapshot;
+    const isCard = a.kind === "kredi_karti";
+    const main = a.estimate != null ? money(a.estimate) : "–";
+    const label = isCard ? "Tahmini güncel borç" : "Tahmini bakiye";
+    const known = snap
+      ? `Son bilinen: ${money(snap.balance)} · ${fmtDate(snap.as_of)} (${SOURCE[snap.source] || snap.source})`
+      : isCard ? "Borç bilgisi henüz yok" : "Bakiye mailde yazmıyor, bir kez elle girin";
+    const flows = snap && a.tx_since
+      ? `<div class="muted" style="font-size:13px">Sonrasında: <span class="neg">+${money(a.in_since)}</span> giriş, −${money(a.out_since)} çıkış (${a.tx_since} işlem)</div>` : "";
+    const limit = a.limit ? `<div style="font-size:13px">Kullanılabilir limit: <strong>${money(a.limit.available_limit)}</strong> <span class="muted">· ${fmtDate(a.limit.as_of)}</span></div>` : "";
+    const st = a.last_statement ? `<div style="font-size:13px">Son ekstre: ${money(a.last_statement.period_debt)} · asgari ${money(a.last_statement.minimum_payment)} · son ödeme ${fmtDate(a.last_statement.due_date)}</div>` : "";
+    return `<div class="card stat">
+      <div class="row" style="justify-content:space-between"><div class="label">${esc(KIND[a.kind] || a.kind)}</div>
+        <button class="btn link" style="color:var(--muted)" data-rename="${a.id}" title="Adını değiştir">✎</button></div>
+      <div style="font-weight:600">${esc(a.name)}</div>
+      <div class="value">${main}</div><div class="sub">${label}</div>
+      <div class="muted" style="font-size:13px;margin-top:6px">${known}</div>${flows}${limit}${st}
+      <button class="btn ghost" style="margin-top:10px;padding:6px 12px" data-balance="${a.id}" data-card="${isCard ? 1 : 0}">${isCard ? "Güncel borcu gir" : "Bakiye gir"}</button>
+    </div>`;
+  }).join("") : `<div class="card empty">Henüz hesap yok. Tarama yapınca hesaplar ve kartlar burada görünür.</div>`;
+
+  const css = getComputedStyle(document.documentElement);
+  const muted = css.getPropertyValue("--muted").trim(), border = css.getPropertyValue("--border").trim();
+  if (flowsChart) flowsChart.destroy();
+  if (!window.Chart || !data.flows.length) return;
+  flowsChart = new Chart($("flows-chart"), {
+    type: "bar",
+    data: {
+      labels: data.flows.map((f) => MONTH.format(new Date(f.month + "-01T00:00:00"))),
+      datasets: [
+        { label: "Gelen", data: data.flows.map((f) => f.in), backgroundColor: css.getPropertyValue("--positive").trim(), borderRadius: 3, maxBarThickness: 28 },
+        { label: "Giden", data: data.flows.map((f) => f.out), backgroundColor: css.getPropertyValue("--danger").trim(), borderRadius: 3, maxBarThickness: 28 },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { position: "bottom", labels: { color: muted, boxWidth: 10, boxHeight: 10 } },
+                 tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${money(c.raw)}` } } },
+      scales: { x: { grid: { display: false }, ticks: { color: muted } },
+                y: { grid: { color: border }, ticks: { color: muted, callback: (v) => TRY.format(v).replace(/,00$/, "") } } },
+    },
+  });
+}
+
+$("accounts-grid").addEventListener("click", async (e) => {
+  const bal = e.target.closest("[data-balance]"), ren = e.target.closest("[data-rename]");
+  try {
+    if (bal) {
+      const what = bal.dataset.card === "1" ? "Kartın bugünkü toplam borcu" : "Hesabın bugünkü bakiyesi";
+      const value = parseTL(prompt(`${what} (TL):`));
+      if (value == null) return;
+      const day = prompt("Hangi tarihteki bakiye? (YYYY-AA-GG)", new Date().toISOString().slice(0, 10));
+      if (!day) return;
+      await api(`/api/accounts/${bal.dataset.balance}/balance`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ balance: String(value), as_of: day }),
+      });
+      loadAccounts();
+    } else if (ren) {
+      const name = (prompt("Hesabın yeni adı:") || "").trim();
+      if (!name) return;
+      await api(`/api/accounts/${ren.dataset.rename}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+      });
+      loadAccounts();
+    }
+  } catch (err) { flash(err.message, true); }
+});
 
 function drawChart(monthly) {
   const categories = [...new Set(monthly.flatMap((m) => Object.keys(m.categories)))];
@@ -405,6 +499,7 @@ const MAIL_STATUS = {
   hata: ["Okunamadı", "soon"],
   bildirim_eklendi: ["Harcama bildirimi eklendi", ""],
   bildirim_okunamadi: ["Bildirim okunamadı", "near"],
+  bilgi: ["Bilgi (tutar yok)", ""],
 };
 
 async function loadMailLog() {

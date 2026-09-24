@@ -232,4 +232,5 @@ class GeminiClient:
         )
         transactions = [t for t in (_transaction(tx, summary.statement_date)
                                     for tx in data.get("transactions") or []) if t]
-        return ParsedStatement(bank=bank, summary=summary, transactions=transactions)
+        kind = "vadesiz" if data.get("kind") == "hesap_hareketi" else "kredi_karti"
+        return ParsedStatement(bank=bank, summary=summary, transactions=transactions, kind=kind)

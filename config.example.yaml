@@ -56,6 +56,11 @@ banks:
 
 # İşlem açıklamasına göre otomatik kategori (büyük/küçük harf duyarsız)
 categories:
+  Kart Ödemesi: ["k.kartı ödeme", "kart ödemesi", "kredi kartı ödemesi", "bonusflaş ödeme"]
+  Kredi Ödemesi: ["kredi tahs", "bireysel amaçlı kredi", "kredi taksit", "taksitli kredi"]
+  Faiz ve Masraf: ["faiz", "komisyon", "kesinti", "masraf", "ekspertiz"]
+  Transfer: ["para transferi", "havale", "eft", "fast", "virman", "hvl", "para yatırma", "para çekme", "atm"]
+  Maaş: ["maaş"]
   Market: ["migros", "a101", "bim", "şok", "carrefour", "macro", "market", "gıda", "süpermarket", "file"]
   Yeme-İçme: ["yemeksepeti", "getir", "trendyol yemek", "starbucks", "restoran", "lokanta", "cafe", "kafe", "yemek", "fast food", "pastane", "fırın"]
   Akaryakıt: ["benzin", "akaryakıt", "shell", "opet", "bp", "petrol ofisi", "total", "aytemiz", "lukoil"]

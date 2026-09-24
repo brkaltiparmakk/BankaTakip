@@ -97,7 +97,7 @@ def test_akbank_style_flow(config):
     sync_mod._sync_bank(client, "INBOX", bank, None, config, storage, report)
     status = {r["message_id"]: r["status"] for r in storage.list_mail_log()}
     assert status == {"<s1>": "eklendi", "<s2>": "zaten_var", "<n1>": "bildirim_eklendi",
-                      "<n2>": "bildirim_okunamadi", "<m1>": "pdf_yok"}
+                      "<n2>": "bilgi", "<m1>": "pdf_yok"}
     assert report.statements_added == 1 and report.transactions_added == 1
 
     statements = {s["source"]: s for s in storage.list_statements()}
@@ -107,7 +107,7 @@ def test_akbank_style_flow(config):
     [tx] = storage.list_transactions(category="Market")
     assert tx["description"] == "MİGROS KADIKÖY" and Decimal(tx["amount"]) == Decimal("845.30")
 
-    # okunamayan bildirimin gövde örneği kaydedilir, yeniden denenebilir
+    # tutar içermeyen bildirim "bilgi" olarak gövde örneğiyle kaydedilir
     sample = [r for r in storage.list_mail_log() if r["message_id"] == "<n2>"][0]["detail"]
     assert "Akbank Mobil" in sample
-    assert storage.reset_skipped_mails() == 2  # <n2> ve <m1>
+    assert storage.reset_skipped_mails() == 1  # <m1>

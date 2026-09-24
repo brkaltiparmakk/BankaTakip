@@ -18,7 +18,7 @@ PG_URL = os.environ.get("TEST_DATABASE_URL")
 def _reset_pg(url):
     import psycopg
     with psycopg.connect(url, autocommit=True) as conn:
-        conn.execute("DROP TABLE IF EXISTS transactions, statements, processed_mails, meta, mail_log CASCADE")
+        conn.execute("DROP TABLE IF EXISTS transactions, statements, processed_mails, meta, mail_log, balance_snapshots, accounts CASCADE")
     from bankatakip import storage as storage_mod
     storage_mod._SCHEMA_READY.discard(url)
 
@@ -81,3 +81,10 @@ def test_meta_and_mails(storage):
     storage.mark_mail_processed("gmail", "<m1>")
     storage.mark_mail_processed("gmail", "<m1>")
     assert storage.is_mail_processed("gmail", "<m1>")
+
+
+def test_schema_comments_have_no_statement_separator():
+    # Postgres şeması ';' ile bölünerek çalıştırılır; yorumlardaki ';' ifadeyi yarıda keser
+    import re
+    from bankatakip.storage import _TABLES
+    assert not any(";" in c for c in re.findall(r"--[^\n]*", _TABLES))

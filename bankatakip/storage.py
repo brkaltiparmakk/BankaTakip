@@ -29,6 +29,27 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS accounts (
+    id         {pk},
+    bank       TEXT NOT NULL,
+    key        TEXT NOT NULL,          -- banka içinde tekil: "kart:5839", "vadesiz:6644898"
+    kind       TEXT NOT NULL,          -- "vadesiz" | "kredi_karti"
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (bank, key)
+);
+
+-- Bilinen bakiye/borç anları: dökümdeki bakiye sütunu, ekstre borcu, kalan limit, elle girilen bakiye
+CREATE TABLE IF NOT EXISTS balance_snapshots (
+    id              {pk},
+    account_id      INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    as_of           TEXT NOT NULL,     -- tarih (YYYY-AA-GG) veya tarih-saat
+    balance         TEXT,              -- vadesiz: hesap bakiyesi, kart: güncel borç
+    available_limit TEXT,              -- kart: kullanılabilir limit
+    source          TEXT NOT NULL,     -- "döküm" | "ekstre" | "bildirim" | "manuel"
+    created_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS statements (
     id              {pk},
     file_hash       TEXT NOT NULL UNIQUE,
@@ -40,6 +61,9 @@ CREATE TABLE IF NOT EXISTS statements (
     due_date        TEXT,
     period_debt     TEXT,
     minimum_payment TEXT,
+    available_limit TEXT,
+    kind            TEXT,
+    account_id      INTEGER REFERENCES accounts(id),
     created_at      TEXT NOT NULL
 );
 
@@ -50,7 +74,9 @@ CREATE TABLE IF NOT EXISTS transactions (
     date         TEXT NOT NULL,
     description  TEXT NOT NULL,
     amount       TEXT NOT NULL,
-    category     TEXT
+    category     TEXT,
+    balance      TEXT,
+    account_id   INTEGER REFERENCES accounts(id)
 );
 
 -- Taramada incelenen her mail ve sonucu (panelde "İncelenen mailler" listesi)
@@ -70,6 +96,10 @@ CREATE TABLE IF NOT EXISTS mail_log (
 CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_tx_statement ON transactions(statement_id);
 """
+
+
+# Para hareketi olan ama harcama sayılmayan kategoriler
+NON_SPENDING_CATEGORIES = {"Transfer", "Kart Ödemesi"}
 
 
 def file_hash(content: bytes) -> str:
@@ -112,6 +142,7 @@ class Storage:
                     for stmt in filter(str.strip, schema.split(";")):
                         cur.execute(stmt)
                 self.conn.commit()
+                self._migrate()
                 _SCHEMA_READY.add(str(url))
         else:
             path = Path(url)
@@ -125,9 +156,29 @@ class Storage:
             }
             self.conn.execute("PRAGMA foreign_keys = ON")
             self.conn.executescript(_TABLES.format(pk="INTEGER PRIMARY KEY AUTOINCREMENT"))
+            self._migrate()
 
     def close(self) -> None:
         self.conn.close()
+
+    # Eski sürümlerde oluşturulmuş tablolara sonradan eklenen sütunlar
+    _NEW_COLUMNS = [
+        ("statements", "available_limit", "TEXT"),
+        ("statements", "kind", "TEXT"),
+        ("statements", "account_id", "INTEGER"),
+        ("transactions", "balance", "TEXT"),
+        ("transactions", "account_id", "INTEGER"),
+    ]
+
+    def _migrate(self) -> None:
+        for table, column, ctype in self._NEW_COLUMNS:
+            if self.is_postgres:
+                self._execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {ctype}")
+            else:
+                existing = {r["name"] for r in self._all(f"PRAGMA table_info({table})")}
+                if column not in existing:
+                    self._execute(f"ALTER TABLE {table} ADD COLUMN {column} {ctype}")
+        self.conn.commit()
 
     # --- küçük yardımcılar: SQL'ler '?' ile yazılır, Postgres için '%s'e çevrilir ---
     def _sql(self, sql: str) -> str:
@@ -233,38 +284,83 @@ class Storage:
         file_path: str | None = None,
         received_at: datetime | None = None,
     ) -> int | None:
-        """Ekstreyi ve işlemlerini kaydeder. Aynı dosya daha önce kaydedildiyse None döner."""
+        """Ekstreyi ve işlemlerini kaydeder. Aynı dosya daha önce kaydedildiyse None döner.
+
+        Hesap dökümlerinde (vadesiz) aynı işlem başka bir dökümde zaten kayıtlıysa tekrar eklenmez;
+        böylece çakışan tarih aralıklı dökümler ya da iki kez gelen aynı döküm işlemleri iki kat saymaz.
+        Dökümdeki bakiye ve ekstredeki borç/limit, hesabın bakiye geçmişine yazılır.
+        """
         if self.has_statement(content_hash):
             return None
         s = statement.summary
         try:
+            account_id = self._account_id(statement.bank, statement.account) if statement.account else None
             cur = self._execute(
                 """INSERT INTO statements (file_hash, bank, source, file_path, received_at,
-                       statement_date, due_date, period_debt, minimum_payment, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
+                       statement_date, due_date, period_debt, minimum_payment, available_limit,
+                       kind, account_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
                 (
                     content_hash, statement.bank, source, file_path, _iso(received_at),
                     _iso(s.statement_date), _iso(s.due_date), _str(s.period_debt),
-                    _str(s.minimum_payment), _now(),
+                    _str(s.minimum_payment), _str(s.available_limit), statement.kind, account_id, _now(),
                 ),
             )
             statement_id = cur.fetchone()["id"]
-            cur.executemany(
-                self._sql(
-                    """INSERT INTO transactions (statement_id, bank, date, description, amount, category)
-                       VALUES (?, ?, ?, ?, ?, ?)"""
-                ),
-                [
-                    (statement_id, statement.bank, tx.date.isoformat(), tx.description,
-                     str(tx.amount), tx.category)
-                    for tx in statement.transactions
-                ],
-            )
+            rows = []
+            seen: dict[tuple, int] = {}
+            for tx in statement.transactions:
+                if statement.kind == "vadesiz" and account_id is not None:
+                    key = (tx.date.isoformat(), tx.description, str(tx.amount), _str(tx.balance))
+                    nth = seen.get(key, 0)
+                    seen[key] = nth + 1
+                    if self._count_tx(account_id, *key) > nth:
+                        continue  # başka bir dökümden zaten kayıtlı
+                rows.append((statement_id, statement.bank, tx.date.isoformat(), tx.description,
+                             str(tx.amount), tx.category, _str(tx.balance), account_id))
+            if rows:
+                cur.executemany(
+                    self._sql("""INSERT INTO transactions (statement_id, bank, date, description, amount,
+                                     category, balance, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"""),
+                    rows,
+                )
+            if account_id is not None:
+                self._snapshots_from_statement(account_id, statement, received_at)
             self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
+        statement.saved_transactions = len(rows)
         return statement_id
+
+    def _count_tx(self, account_id: int, day: str, description: str, amount: str,
+                  balance: str | None) -> int:
+        sql = ("SELECT COUNT(*) AS n FROM transactions WHERE account_id = ? AND date = ? "
+               "AND description = ? AND amount = ? AND ")
+        if balance is None:
+            row = self._one(sql + "balance IS NULL", (account_id, day, description, amount))
+        else:
+            row = self._one(sql + "balance = ?", (account_id, day, description, amount, balance))
+        return int(row["n"])
+
+    def _snapshots_from_statement(self, account_id: int, statement: ParsedStatement,
+                                  received_at: datetime | None) -> None:
+        s = statement.summary
+        if statement.kind == "vadesiz":
+            dated = [tx for tx in statement.transactions if tx.balance is not None]
+            if dated:
+                # En yeni tarihli satırlardan, dökümdeki sırasına göre sonuncusu (en güncel bakiye)
+                last_day = max(tx.date for tx in dated)
+                same_day = [tx for tx in dated if tx.date == last_day]
+                # Döküm yeniden eskiye sıralıysa günün en güncel satırı ilk, değilse son satırdır
+                newest_first = dated[0].date > dated[-1].date
+                latest = same_day[0] if newest_first else same_day[-1]
+                self.add_snapshot(account_id, last_day.isoformat(), balance=latest.balance, source="döküm")
+        elif s.period_debt is not None or s.available_limit is not None:
+            as_of = s.statement_date or (received_at.date() if received_at else None) or s.due_date
+            if as_of is not None:
+                self.add_snapshot(account_id, as_of.isoformat(), balance=s.period_debt,
+                                  available_limit=s.available_limit, source="ekstre")
 
     def has_same_summary(self, bank: str, due_date: date | None, period_debt: Decimal | None) -> bool:
         """Aynı bankanın aynı son ödeme tarihli ve aynı borçlu ekstresi zaten var mı?
@@ -281,25 +377,122 @@ class Storage:
         month = tx.date.strftime("%Y-%m")
         key = f"bildirim:{source}:{bank}:{month}"
         try:
+            account_id = self._account_id(bank, tx.account) if tx.account else None
             row = self._one("SELECT id FROM statements WHERE file_hash = ?", (key,))
             if row:
                 statement_id = row["id"]
             else:
                 statement_id = self._execute(
-                    """INSERT INTO statements (file_hash, bank, source, statement_date, created_at)
-                       VALUES (?, ?, ?, ?, ?) RETURNING id""",
-                    (key, bank, f"{source} (bildirim)", f"{month}-01", _now()),
+                    """INSERT INTO statements (file_hash, bank, source, statement_date, kind, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?) RETURNING id""",
+                    (key, bank, f"{source} (bildirim)", f"{month}-01", "bildirim", _now()),
                 ).fetchone()["id"]
             self._execute(
-                """INSERT INTO transactions (statement_id, bank, date, description, amount, category)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (statement_id, bank, tx.date.isoformat(), tx.description, str(tx.amount), tx.category),
+                """INSERT INTO transactions (statement_id, bank, date, description, amount, category,
+                       account_id) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (statement_id, bank, tx.date.isoformat(), tx.description, str(tx.amount), tx.category,
+                 account_id),
             )
             self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
         return statement_id
+
+    # --- hesaplar ve bakiye ---
+    def _account_id(self, bank: str, ref) -> int:
+        row = self._one("SELECT id FROM accounts WHERE bank = ? AND key = ?", (bank, ref.key))
+        if row:
+            return row["id"]
+        return self._execute(
+            "INSERT INTO accounts (bank, key, kind, name, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id",
+            (bank, ref.key, ref.kind, ref.name, _now()),
+        ).fetchone()["id"]
+
+    def account_id(self, bank: str, ref) -> int:
+        try:
+            account_id = self._account_id(bank, ref)
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return account_id
+
+    def add_snapshot(self, account_id: int, as_of: str, balance: Decimal | None = None,
+                     available_limit: Decimal | None = None, source: str = "manuel",
+                     commit: bool = False) -> None:
+        self._execute(
+            """INSERT INTO balance_snapshots (account_id, as_of, balance, available_limit, source, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (account_id, as_of, _str(balance), _str(available_limit), source, _now()),
+        )
+        if commit:
+            self.conn.commit()
+
+    def rename_account(self, account_id: int, name: str) -> bool:
+        cur = self._write("UPDATE accounts SET name = ? WHERE id = ?", (name, account_id))
+        return cur.rowcount > 0
+
+    def accounts_overview(self) -> list[dict]:
+        """Her hesap için son bilinen bakiye/borç ve sonrasındaki giriş-çıkışlarla tahmini güncel durum."""
+        result = []
+        for acc in self._all("SELECT * FROM accounts ORDER BY bank, kind, name"):
+            snaps = self._all(
+                "SELECT * FROM balance_snapshots WHERE account_id = ? ORDER BY as_of DESC, id DESC",
+                (acc["id"],),
+            )
+            balance_snap = next((x for x in snaps if x["balance"] is not None), None)
+            limit_snap = next((x for x in snaps if x["available_limit"] is not None), None)
+            since = balance_snap["as_of"][:10] if balance_snap else None
+            flows = self._one(
+                """SELECT COUNT(*) AS n,
+                          SUM(CASE WHEN CAST(amount AS NUMERIC) > 0 THEN CAST(amount AS NUMERIC) ELSE 0 END) AS cikan,
+                          SUM(CASE WHEN CAST(amount AS NUMERIC) < 0 THEN -CAST(amount AS NUMERIC) ELSE 0 END) AS giren
+                   FROM transactions WHERE account_id = ?""" + (" AND date > ?" if since else ""),
+                (acc["id"], since) if since else (acc["id"],),
+            )
+            out_ = Decimal(str(flows["cikan"] or 0))
+            in_ = Decimal(str(flows["giren"] or 0))
+            estimate = None
+            if balance_snap is not None:
+                base = Decimal(balance_snap["balance"])
+                # vadesiz: bakiye + giren - çıkan; kart: borç + harcama - ödeme
+                estimate = base + in_ - out_ if acc["kind"] == "vadesiz" else base + out_ - in_
+            last_statement = self._one(
+                """SELECT due_date, period_debt, minimum_payment FROM statements
+                   WHERE account_id = ? AND due_date IS NOT NULL ORDER BY due_date DESC LIMIT 1""",
+                (acc["id"],),
+            )
+            result.append({
+                **acc,
+                "snapshot": balance_snap,
+                "limit": limit_snap,
+                "since": since,
+                "in_since": in_,
+                "out_since": out_,
+                "tx_since": int(flows["n"] or 0),
+                "estimate": estimate,
+                "last_statement": last_statement,
+            })
+        return result
+
+    def monthly_flows(self, account_id: int | None = None) -> list[dict]:
+        """Aylık giren/çıkan para (transferler dahil; bakiye hareketini gösterir)."""
+        totals: dict[str, dict[str, Decimal]] = {}
+        sql = "SELECT date, amount FROM transactions"
+        params: tuple = ()
+        if account_id is not None:
+            sql += " WHERE account_id = ?"
+            params = (account_id,)
+        for row in self._all(sql, params):
+            month = row["date"][:7]
+            amount = Decimal(row["amount"])
+            t = totals.setdefault(month, {"in": Decimal(0), "out": Decimal(0)})
+            if amount > 0:
+                t["out"] += amount
+            else:
+                t["in"] += -amount
+        return [{"month": m, "in": v["in"], "out": v["out"]} for m, v in sorted(totals.items())]
 
     def delete_statement(self, statement_id: int) -> bool:
         try:
@@ -367,11 +560,12 @@ class Storage:
         return cur.rowcount > 0
 
     def monthly_summary(self) -> list[tuple[str, str, Decimal]]:
-        """(ay, kategori, toplam harcama) — sadece pozitif (harcama) tutarlar."""
+        """(ay, kategori, toplam harcama) — sadece pozitif (harcama) tutarlar. Kendi hesaplar arası
+        transferler ve kredi kartı ödemeleri harcama sayılmaz (kart harcamaları zaten ayrıca sayılır)."""
         totals: dict[tuple[str, str], Decimal] = {}
         for row in self._all("SELECT date, category, amount FROM transactions"):
             amount = Decimal(row["amount"])
-            if amount <= 0:
+            if amount <= 0 or row["category"] in NON_SPENDING_CATEGORIES:
                 continue
             key = (row["date"][:7], row["category"] or "Diğer")
             totals[key] = totals.get(key, Decimal(0)) + amount
