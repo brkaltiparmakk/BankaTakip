@@ -10,7 +10,7 @@ from datetime import date, datetime, timedelta
 
 from .config import BankConfig, Config
 from .mail import MailClient
-from .parsers import PdfPasswordError, extract_text, get_parser
+from .parsers import PdfPasswordError, extract_document_text, get_parser
 from .storage import Storage, file_hash
 
 log = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ def _safe_name(text: str) -> str:
     return re.sub(r"[^\w.\-]+", "_", text).strip("_") or "ekstre"
 
 
-def import_pdf(
+def import_statement(
     content: bytes,
     bank: BankConfig,
     config: Config,
@@ -47,12 +47,13 @@ def import_pdf(
     filename: str = "ekstre.pdf",
     received_at: datetime | None = None,
 ) -> tuple[int | None, int]:
-    """Tek bir PDF'i işler. (statement_id, işlem sayısı) döndürür; zaten varsa (None, 0)."""
+    """Tek bir ekstre dosyasını (PDF/Excel/HTML) işler. (statement_id, işlem sayısı) döndürür;
+    zaten varsa (None, 0)."""
     digest = file_hash(content)
     if storage.has_statement(digest):
         return None, 0
 
-    text = extract_text(content, bank.pdf_password)
+    text = extract_document_text(content, bank.pdf_password)
     statement = get_parser(bank.name, config.categories).parse(text)
 
     target = None
@@ -70,13 +71,20 @@ def import_pdf(
     return statement_id, len(statement.transactions)
 
 
-def _account_since(config: Config, storage: Storage, account: str) -> date:
-    """İlk taramada lookback_days kadar geriye, sonrakilerde son başarılı taramadan
-    bir hafta öncesine kadar bakılır (geç gelen mailleri kaçırmamak için)."""
+def _account_since(config: Config, storage: Storage, account: str) -> date | None:
+    """Geçmiş taraması bitmemişse tüm geçmişe (veya lookback_days kadar) bakılır; bittiyse
+    son başarılı taramadan bir hafta öncesine kadar (geç gelen mailleri kaçırmamak için)."""
     last = storage.get_meta(f"last_sync:{account}")
     if last:
         return date.fromisoformat(last) - timedelta(days=7)
-    return date.today() - timedelta(days=config.lookback_days)
+    if config.lookback_days > 0:
+        return date.today() - timedelta(days=config.lookback_days)
+    return None
+
+
+def history_done(storage: Storage, account: str) -> bool:
+    """Bu hesabın geçmiş mailleri bir kez baştan sona tarandı mı?"""
+    return storage.get_meta(f"last_sync:{account}") is not None
 
 
 def sync(config: Config, storage: Storage, since: date | None = None,
@@ -102,7 +110,7 @@ def sync(config: Config, storage: Storage, since: date | None = None,
             report.errors.append(f"{account.name}: bağlanılamadı ({exc})")
             continue
         try:
-            for folder in account.folders:
+            for folder in account.folders or client.default_folders():
                 for bank in config.banks:
                     _sync_bank(client, folder, bank, account_since, config, storage, report, deadline)
         finally:
@@ -113,7 +121,7 @@ def sync(config: Config, storage: Storage, since: date | None = None,
     return report
 
 
-def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date,
+def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | None,
                config: Config, storage: Storage, report: SyncReport,
                deadline: float | None = None) -> None:
     account = client.account.name
@@ -128,6 +136,8 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date,
     if not uids:
         return
 
+    # UID'ler geliş sırasına göre artar; en yeni maillerden başla ki güncel ekstreler önce gelsin
+    uids.sort(key=int, reverse=True)
     headers = client.fetch_headers(uids)
     for uid in uids:
         if deadline and time.monotonic() > deadline:
@@ -162,7 +172,7 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date,
         results = []
         for att in mail.attachments:
             try:
-                statement_id, count = import_pdf(
+                statement_id, count = import_statement(
                     att.content, bank, config, storage, source=account,
                     filename=att.filename, received_at=mail.received,
                 )
@@ -191,3 +201,7 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date,
                 break
         if not retry_later:
             storage.mark_mail_processed(account, header.message_id)
+
+
+# Eski ad; geriye dönük uyumluluk için
+import_pdf = import_statement

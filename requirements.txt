@@ -2,6 +2,8 @@ pdfplumber>=0.11
 pypdf>=4.0
 cryptography>=42  # AES şifreli PDF'ler için
 PyYAML>=6.0
+xlrd>=2.0      # .xls ekleri (ör. Garanti hesap hareketleri)
+openpyxl>=3.1  # .xlsx ekleri
 python-dotenv>=1.0
 # web paneli / Vercel
 fastapi>=0.110

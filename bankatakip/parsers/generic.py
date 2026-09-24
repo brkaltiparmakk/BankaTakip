@@ -24,6 +24,9 @@ DATE_NUMERIC = r"\d{1,2}[./-]\d{1,2}[./-](?:\d{4}|\d{2})"
 DATE_TEXT = r"\d{1,2}\s+(?:" + "|".join(MONTHS_TR) + r")\s+\d{4}"
 DATE_RE = re.compile(rf"(?:{DATE_NUMERIC}|{DATE_TEXT})")
 AMOUNT_RE = re.compile(r"(?<![\d,.])([-+]?)(\d{1,3}(?:\.\d{3})*|\d+),(\d{2})(?![\d])\s*([-+])?")
+TIME_RE = re.compile(r"^\d{1,2}:\d{2}(?::\d{2})?\s+")
+# Kredi kartı ekstresinde olan, vadesiz hesap dökümünde olmayan ifadeler
+CARD_MARKERS = ("son odeme", "donem borcu", "ekstre borcu", "asgari odeme", "minimum odeme")
 LINE_RE = re.compile(
     rf"^\s*(?P<date>{DATE_NUMERIC}|{DATE_TEXT})"
     rf"(?:\s+(?:{DATE_NUMERIC}))?"  # bazı ekstrelerde valör/ikinci tarih sütunu
@@ -80,8 +83,8 @@ def parse_date(text: str) -> date | None:
 
 
 SUMMARY_PATTERNS = {
-    "period_debt": [r"donem\s+borcu", r"toplam\s+borc", r"hesap\s+ozeti\s+borcu"],
-    "minimum_payment": [r"asgari\s+odeme(?:\s+tutari)?"],
+    "period_debt": [r"donem\s+borcu", r"ekstre\s+borcu", r"toplam\s+borc", r"hesap\s+ozeti\s+borcu"],
+    "minimum_payment": [r"asgari\s+odeme(?:\s+tutari)?", r"minimum\s+odeme(?:\s+tutari)?"],
     "due_date": [r"son\s+odeme\s+tarihi"],
     "statement_date": [r"hesap\s+kesim\s+tarihi", r"ekstre\s+tarihi", r"kesim\s+tarihi"],
 }
@@ -108,12 +111,22 @@ class GenericParser:
 
     def parse(self, text: str) -> ParsedStatement:
         statement = ParsedStatement(bank=self.bank_name, summary=self.parse_summary(text))
+        flip = self.is_account_statement(text)
         for line in text.splitlines():
             tx = self.parse_line(line)
             if tx is not None:
+                if flip:
+                    # Vadesiz hesapta çıkan para eksi yazılır; uygulamada harcama artı olduğu için çevir
+                    tx.amount = -tx.amount
                 tx.category = self.categorize(tx.description)
                 statement.transactions.append(tx)
         return statement
+
+    @staticmethod
+    def is_account_statement(text: str) -> bool:
+        """Vadesiz hesap hareket dökümü mü (kredi kartı ekstresi değil)?"""
+        folded = tr_fold(text)
+        return "bakiye" in folded and not any(marker in folded for marker in CARD_MARKERS)
 
     def parse_line(self, line: str) -> Transaction | None:
         # Ay isimleri katlanmış metinle eşleştiği için regex katlanmış satırda çalışır,
@@ -125,6 +138,7 @@ class GenericParser:
         if tx_date is None:
             return None
         rest = line[m.start("rest"):]
+        rest = TIME_RE.sub("", rest, count=1)  # "04.08.2026 12:50 ..." gibi satırlarda saat
         amount_match = AMOUNT_RE.search(rest)
         if not amount_match:
             return None

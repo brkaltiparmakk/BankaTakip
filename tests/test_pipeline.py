@@ -128,7 +128,8 @@ def test_mail_log_and_reset(config, sample_pdf):
     })
     sync_mod._sync_bank(client, "INBOX", config.banks[0], None, config, storage, sync_mod.SyncReport())
     statuses = {r["message_id"]: r["status"] for r in storage.list_mail_log()}
-    assert statuses == {"<a>": "eklendi", "<b>": "konu_eslesmedi", "<np>": "pdf_yok", "<d>": "zaten_var"}
+    # en yeni mail (<d>) önce işlenir, aynı PDF'i taşıyan eski mail "zaten var" olur
+    assert statuses == {"<d>": "eklendi", "<b>": "konu_eslesmedi", "<np>": "pdf_yok", "<a>": "zaten_var"}
     assert all(r["sender"] == "bilgi@garantibbva.com.tr" for r in storage.list_mail_log())
 
     storage.set_meta("last_sync:gmail", "2026-09-01")
@@ -167,3 +168,41 @@ def test_fetch_headers_parses_imap_response():
     assert headers[b"10"].message_id == "<x@banka>"
     assert headers[b"10"].received.day == 15
     assert headers[b"11"].message_id == "gmail-11"  # Message-ID yoksa yedek kimlik
+
+
+def test_default_folders_and_search_without_date():
+    from datetime import date as d
+    from bankatakip.config import MailAccount
+    from bankatakip.mail import MailClient
+
+    class Conn:
+        def __init__(self, lines):
+            self.lines, self.searches = lines, []
+
+        def list(self):
+            return "OK", self.lines
+
+        def select(self, folder, readonly=True):
+            return "OK", [b"1"]
+
+        def uid(self, cmd, charset, *criteria):
+            self.searches.append(criteria)
+            return "OK", [b"3 1 2"]
+
+    gmail = MailClient(MailAccount("gmail", "gmail", "a@gmail.com", "X", "imap.gmail.com"))
+    gmail.conn = Conn([
+        b'(\\HasNoChildren) "/" "INBOX"',
+        b'(\\HasChildren \\Noselect) "/" "[Gmail]"',
+        b'(\\All \\HasNoChildren) "/" "[Gmail]/T&APw-m Postalar"',
+        b'(\\HasNoChildren \\Sent) "/" "[Gmail]/G&APY-nderilmi&AV8- Postalar"',
+    ])
+    assert gmail.default_folders() == ["[Gmail]/T&APw-m Postalar"]
+    assert gmail.search("INBOX", "banka.com", None) == [b"3", b"1", b"2"]
+    assert gmail.conn.searches[-1] == ("FROM", '"banka.com"')
+    gmail.search("INBOX", "banka.com", d(2026, 9, 1))
+    assert gmail.conn.searches[-1] == ("FROM", '"banka.com"', "SINCE", "01-Sep-2026")
+
+    icloud = MailClient(MailAccount("icloud", "icloud", "a@icloud.com", "X", "imap.mail.me.com"))
+    icloud.conn = Conn([b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren \\Archive) "/" "Archive"',
+                        b'(\\HasNoChildren \\Junk) "/" "Junk"'])
+    assert icloud.default_folders() == ["INBOX", "Archive"]

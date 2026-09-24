@@ -16,10 +16,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from ..config import Config, ConfigError, load_config
-from ..parsers import PdfPasswordError
+from ..parsers import PdfPasswordError, detect_kind
 from ..storage import Storage, is_postgres_url
 from ..reminders import send_due_reminders
-from ..sync import import_pdf, sync
+from ..sync import history_done, import_pdf, sync
 from . import auth
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -126,11 +126,16 @@ def setup_warnings(config: Config) -> list[str]:
 
 
 @app.get("/api/me")
-def me(user: str = User, config: Config = Depends(get_config)):
+def me(user: str = User, config: Config = Depends(get_config),
+       storage: Storage = Depends(get_storage)):
     return {
         "email": user,
         "warnings": setup_warnings(config),
-        "accounts": [{"name": a.name, "email": a.email} for a in config.accounts],
+        "accounts": [
+            {"name": a.name, "email": a.email, "history_done": history_done(storage, a.name),
+             "last_sync": storage.get_meta(f"last_sync:{a.name}")}
+            for a in config.accounts
+        ],
         "banks": [
             {"name": b.name, "senders": b.senders, "has_pdf_password": bool(b.pdf_password)}
             for b in config.banks
@@ -252,8 +257,8 @@ async def upload(
     content = await file.read(MAX_UPLOAD + 1)
     if len(content) > MAX_UPLOAD:
         raise HTTPException(413, "Dosya 4 MB'tan büyük olamaz.")
-    if not content.startswith(b"%PDF"):
-        raise HTTPException(400, "Sadece PDF dosyası yüklenebilir.")
+    if detect_kind(content) is None:
+        raise HTTPException(400, "Sadece PDF veya Excel (.xls/.xlsx) ekstre yüklenebilir.")
     try:
         statement_id, count = import_pdf(content, bank_cfg, config, storage,
                                          source="manuel", filename=file.filename or "ekstre.pdf")

@@ -4,21 +4,19 @@
 database: data/bankatakip.db
 attachments_dir: data/ekstreler
 
-# Kaç gün geriye dönük mail taransın (ilk senkronizasyon için)
-lookback_days: 365
+# İlk taramada kaç gün geriye bakılsın; 0 = tüm geçmiş (varsayılan)
+lookback_days: 0
 
 accounts:
   - name: gmail
     provider: gmail            # imap.gmail.com
     email: ornek@gmail.com
     password_env: GMAIL_APP_PASSWORD
-    folders: ["INBOX"]         # Tüm postalar için: "[Gmail]/All Mail"
 
   - name: icloud
     provider: icloud           # imap.mail.me.com
     email: ornek@icloud.com
     password_env: ICLOUD_APP_PASSWORD
-    folders: ["INBOX"]
 
   # Başka bir IMAP sunucusu için:
   # - name: is-maili
@@ -33,7 +31,7 @@ accounts:
 banks:
   - name: Garanti BBVA
     senders: ["garantibbva.com.tr", "garanti.com.tr"]
-    subject_keywords: ["ekstre", "hesap özeti", "hesap ozeti"]
+    subject_keywords: ["ekstre", "hesap özeti", "hesap ozeti", "hesap hareketleri"]
     pdf_password_env: GARANTI_PDF_PASSWORD
 
   - name: Yapı Kredi
@@ -45,6 +43,11 @@ banks:
     senders: ["isbank.com.tr"]
     subject_keywords: ["ekstre", "hesap özeti"]
     pdf_password_env: ISBANK_PDF_PASSWORD
+
+  - name: Enpara
+    senders: ["enpara.com"]
+    subject_keywords: ["ekstre", "hesap özeti"]
+    pdf_password_env: ENPARA_PDF_PASSWORD
 
   - name: Akbank
     senders: ["akbank.com"]

@@ -3,7 +3,7 @@
 banks:
   - name: Garanti BBVA
     senders: ["garantibbva.com.tr", "garanti.com.tr"]
-    subject_keywords: ["ekstre", "hesap özeti", "hesap ozeti"]
+    subject_keywords: ["ekstre", "hesap özeti", "hesap ozeti", "hesap hareketleri"]
     pdf_password_env: GARANTI_PDF_PASSWORD
 
   - name: Yapı Kredi
@@ -15,6 +15,11 @@ banks:
     senders: ["isbank.com.tr"]
     subject_keywords: ["ekstre", "hesap özeti"]
     pdf_password_env: ISBANK_PDF_PASSWORD
+
+  - name: Enpara
+    senders: ["enpara.com"]
+    subject_keywords: ["ekstre", "hesap özeti"]
+    pdf_password_env: ENPARA_PDF_PASSWORD
 
   - name: Akbank
     senders: ["akbank.com"]

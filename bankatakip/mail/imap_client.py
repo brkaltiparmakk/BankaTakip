@@ -66,19 +66,32 @@ def _imap_date(d: date) -> str:
     return f"{d.day:02d}-{months[d.month - 1]}-{d.year}"
 
 
-def extract_pdf_attachments(msg: Message) -> list[Attachment]:
+STATEMENT_TYPES = {
+    "application/pdf", "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+STATEMENT_EXTENSIONS = (".pdf", ".xls", ".xlsx", ".htm", ".html")
+
+
+def extract_statement_attachments(msg: Message) -> list[Attachment]:
+    """Ekstre olabilecek ekler: PDF, Excel ve dosya olarak eklenmiş HTML tablolar."""
     attachments = []
     for part in msg.walk():
         if part.get_content_maintype() == "multipart":
             continue
         filename = decode_str(part.get_filename())
-        is_pdf = part.get_content_type() == "application/pdf" or filename.lower().endswith(".pdf")
-        if not is_pdf:
+        ctype = part.get_content_type()
+        # Mailin kendi HTML gövdesi ek değildir; sadece dosya adı olan HTML parçaları alınır
+        if not (ctype in STATEMENT_TYPES or (filename and filename.lower().endswith(STATEMENT_EXTENSIONS))):
             continue
         payload = part.get_payload(decode=True)
         if payload:
-            attachments.append(Attachment(filename or "ekstre.pdf", payload))
+            attachments.append(Attachment(filename or "ekstre", payload))
     return attachments
+
+
+# Eski ad; geriye dönük uyumluluk için
+extract_pdf_attachments = extract_statement_attachments
 
 
 class MailClient:
@@ -108,7 +121,44 @@ class MailClient:
     def __exit__(self, *exc) -> None:
         self.close()
 
-    def search(self, folder: str, sender: str, since: date) -> list[bytes]:
+    def list_folders(self) -> list[tuple[str, set[str]]]:
+        """(klasör adı, bayraklar) listesi. Adlar sunucunun gönderdiği (kodlanmış) haliyle döner."""
+        assert self.conn is not None
+        status, data = self.conn.list()
+        folders = []
+        for line in data or [] if status == "OK" else []:
+            if not isinstance(line, bytes):
+                continue
+            m = re.match(rb'\((?P<flags>[^)]*)\) (?:"[^"]*"|NIL) (?P<name>.+)$', line)
+            if not m:
+                continue
+            name = m.group("name").decode("utf-8", "replace").strip()
+            if name.startswith('"') and name.endswith('"'):
+                name = name[1:-1].replace('\\"', '"')
+            flags = {f.decode().lower() for f in m.group("flags").split()}
+            folders.append((name, flags))
+        return folders
+
+    def default_folders(self) -> list[str]:
+        """Gmail: tüm mailleri içeren "Tüm Postalar" (dil ayarından bağımsız, \\All bayrağıyla bulunur).
+        Diğerleri: Gelen Kutusu + varsa Arşiv klasörü."""
+        try:
+            folders = self.list_folders()
+        except Exception:
+            return ["INBOX"]
+        if self.account.provider == "gmail":
+            for name, flags in folders:
+                if "\\all" in flags:
+                    return [name]
+            return ["INBOX"]
+        result = ["INBOX"]
+        for name, flags in folders:
+            if "\\archive" in flags or name.lower() in ("archive", "arşiv"):
+                if name not in result:
+                    result.append(name)
+        return result
+
+    def search(self, folder: str, sender: str, since: date | None) -> list[bytes]:
         assert self.conn is not None
         status, _ = self.conn.select(f'"{folder}"', readonly=True)
         if status != "OK":
@@ -116,7 +166,10 @@ class MailClient:
             return []
         # Türkçe karakterli konu aramaları sunucuya göre sorun çıkarabildiği için
         # sunucuda sadece gönderen + tarih ile arıyoruz, konu filtresi istemci tarafında.
-        status, data = self.conn.uid("SEARCH", None, "FROM", f'"{sender}"', "SINCE", _imap_date(since))
+        criteria = ["FROM", f'"{sender}"']
+        if since is not None:
+            criteria += ["SINCE", _imap_date(since)]
+        status, data = self.conn.uid("SEARCH", None, *criteria)
         if status != "OK" or not data or not data[0]:
             return []
         return data[0].split()
@@ -183,5 +236,5 @@ class MailClient:
             sender=parseaddr(decode_str(msg.get("From")))[1].lower(),
             subject=decode_str(msg.get("Subject")),
             received=received,
-            attachments=extract_pdf_attachments(msg),
+            attachments=extract_statement_attachments(msg),
         )

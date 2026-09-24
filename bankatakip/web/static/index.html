@@ -166,16 +166,16 @@ dd { margin: 0; overflow-wrap: anywhere; }
     <div class="grid">
       <div class="card">
         <h2>Mailleri tara</h2>
-        <p class="muted">Gmail ve iCloud'daki yeni ekstre maillerini bulur ve işler. Her sabah otomatik de çalışır.</p>
+        <p class="muted">İlk taramada tüm geçmiş mailler okunur (bitene kadar kendiliğinden devam eder), sonra sadece yeni gelenler. Her sabah otomatik de çalışır.</p>
         <button class="btn" id="sync-btn">Şimdi tara</button>
         <div id="sync-result" style="margin-top:12px"></div>
       </div>
       <div class="card">
-        <h2>PDF yükle</h2>
-        <p class="muted">Elinizdeki bir ekstreyi doğrudan ekleyin.</p>
+        <h2>Ekstre yükle</h2>
+        <p class="muted">Elinizdeki bir ekstreyi (PDF veya Excel) doğrudan ekleyin.</p>
         <form id="upload-form" class="row">
           <select id="upload-bank" required></select>
-          <input type="file" id="upload-file" accept="application/pdf" required>
+          <input type="file" id="upload-file" accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel" required>
           <button class="btn" type="submit">Yükle</button>
         </form>
         <div id="upload-result" style="margin-top:12px"></div>
@@ -388,7 +388,7 @@ const MAIL_STATUS = {
   eklendi: ["Ekstre eklendi", ""],
   zaten_var: ["Zaten kayıtlı", ""],
   konu_eslesmedi: ["Konu ekstre değil", "near"],
-  pdf_yok: ["PDF eki yok", "near"],
+  pdf_yok: ["Ekstre eki yok", "near"],
   sifreli: ["PDF şifresi gerekli", "soon"],
   hata: ["Okunamadı", "soon"],
 };
@@ -413,24 +413,43 @@ $("reset-btn").addEventListener("click", async () => {
 
 function renderSettings() {
   loadMailLog();
-  const accounts = me.accounts.length ? me.accounts.map((a) => `${esc(a.name)}: ${esc(a.email)}`).join("<br>")
+  const accounts = me.accounts.length ? me.accounts.map((a) => `${esc(a.name)}: ${esc(a.email)} <span class="pill ${a.history_done ? "" : "near"}">${
+      a.history_done ? "geçmiş tarandı, yeni mailler izleniyor" : "geçmiş mailler henüz taranmadı"}</span>`).join("<br>")
     : `<span style="color:var(--danger)">Tanımlı değil (GMAIL_EMAIL / ICLOUD_EMAIL)</span>`;
   const banks = me.banks.map((b) => `${esc(b.name)} <span class="muted">(${b.has_pdf_password ? "PDF şifresi var" : "PDF şifresi yok"})</span>`).join("<br>");
   $("settings-list").innerHTML = `<dt>Mail hesapları</dt><dd>${accounts}</dd><dt>Bankalar</dt><dd>${banks}</dd>
     <dt>Kategoriler</dt><dd>${me.categories.map(esc).join(", ")}</dd>`;
 }
 
+let syncing = false, stopRequested = false;
 $("sync-btn").addEventListener("click", async () => {
   const btn = $("sync-btn");
-  btn.disabled = true; btn.textContent = "Taranıyor…"; $("sync-result").innerHTML = "";
+  if (syncing) { stopRequested = true; btn.textContent = "Durduruluyor…"; return; }
+  syncing = true; stopRequested = false;
+  btn.textContent = "Durdur";
+  const total = { mails: 0, statements: 0, transactions: 0, errors: new Set() };
+  let round = 0, last = null;
   try {
-    const r = await api("/api/sync", { method: "POST" });
-    $("sync-result").innerHTML = `<div class="notice">${r.mails_checked} mail kontrol edildi, ${r.statements_added} yeni ekstre, ${r.transactions_added} işlem eklendi.` +
-      (r.incomplete ? `<br><strong>Süre doldu, kalanlar için tekrar "Şimdi tara"ya basın.</strong>` : "") +
-      (r.errors.length ? `<ul>${r.errors.map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : "") + `</div>`;
+    // Süre sınırı yüzünden tarama parça parça yapılır; bitene kadar kendiliğinden devam eder.
+    do {
+      round++;
+      $("sync-result").innerHTML = `<div class="notice">Taranıyor… (${round}. tur) · şu ana kadar ${total.statements} yeni ekstre, ${total.transactions} işlem</div>`;
+      last = await api("/api/sync", { method: "POST" });
+      total.mails += last.mails_checked; total.statements += last.statements_added;
+      total.transactions += last.transactions_added;
+      last.errors.forEach((e) => total.errors.add(e));
+      loadMailLog();
+    } while (last.incomplete && !stopRequested && round < 100);
+    const status = last.incomplete
+      ? `<br><strong>Tarama durduruldu; "Şimdi tara" ile kaldığı yerden devam eder.</strong>`
+      : total.errors.size ? `<br>Tarama bitti, aşağıdaki hatalara bakın:` : `<br>Tarama tamamlandı.`;
+    $("sync-result").innerHTML = `<div class="notice">${round} turda ${total.statements} yeni ekstre, ${total.transactions} işlem eklendi.${status}` +
+      (total.errors.size ? `<ul>${[...total.errors].map((e) => `<li>${esc(e)}</li>`).join("")}</ul>` : "") + `</div>`;
+    me = await api("/api/me");
+    renderSettings();
   } catch (err) {
     $("sync-result").innerHTML = `<div class="notice error">${esc(err.message)}</div>`;
-  } finally { btn.disabled = false; btn.textContent = "Şimdi tara"; loadMailLog(); }
+  } finally { syncing = false; btn.textContent = "Şimdi tara"; }
 });
 
 $("upload-form").addEventListener("submit", async (e) => {

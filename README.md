@@ -1,7 +1,10 @@
 # BankaTakip
 
-Gmail ve iCloud mail kutularınıza gelen banka ekstrelerini otomatik bulur, PDF eklerini
-(şifreliyse şifresiyle) açar, içindeki işlemleri okuyup SQLite veritabanına kaydeder.
+Gmail ve iCloud mail kutularınıza gelen banka ekstrelerini otomatik bulur, PDF ve Excel
+eklerini (şifreliyse şifresiyle) açar, içindeki işlemleri okuyup veritabanına kaydeder.
+İlk taramada tüm geçmiş mailler (Gmail'de "Tüm Postalar", iCloud'da Gelen Kutusu + Arşiv)
+okunur; sonrasında sadece yeni gelenler taranır. Vadesiz hesap hareketlerinde çıkan para
+harcama, gelen para gelir olarak işlenir.
 Sonra harcamalarınızı kategori ve ay bazında görebilirsiniz.
 
 ```

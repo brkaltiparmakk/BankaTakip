@@ -25,7 +25,8 @@ class MailAccount:
     password_env: str
     host: str
     port: int = 993
-    folders: list[str] = field(default_factory=lambda: ["INBOX"])
+    # None: otomatik (Gmail'de "Tüm Postalar", diğerlerinde Gelen Kutusu + Arşiv)
+    folders: list[str] | None = None
 
     @property
     def password(self) -> str:
@@ -81,7 +82,7 @@ ENV_ACCOUNTS = {
 class Config:
     database: str
     attachments_dir: Path | None  # None: PDF'ler diske kaydedilmez (Vercel)
-    lookback_days: int
+    lookback_days: int  # ilk taramada kaç gün geriye bakılsın; 0 = tüm geçmiş
     accounts: list[MailAccount]
     banks: list[BankConfig]
     categories: dict[str, list[str]]
@@ -114,7 +115,7 @@ def _parse_account(acc: dict) -> MailAccount:
         password_env=acc["password_env"],
         host=acc.get("host", host),
         port=int(acc.get("port", port)),
-        folders=acc.get("folders", ["INBOX"]),
+        folders=acc.get("folders") or None,
     )
 
 
@@ -152,7 +153,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
     return Config(
         database=database,
         attachments_dir=Path(attachments) if attachments else None,
-        lookback_days=int(os.environ.get("LOOKBACK_DAYS") or raw.get("lookback_days", 365)),
+        lookback_days=int(os.environ.get("LOOKBACK_DAYS") or raw.get("lookback_days", 0)),
         accounts=accounts,
         banks=banks,
         categories=raw.get("categories") or defaults["categories"],
