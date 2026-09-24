@@ -1,0 +1,62 @@
+# Bu dosyayı config.yaml olarak kopyalayıp kendi bilgilerinizle doldurun.
+# Şifreler buraya DEĞİL, .env dosyasına yazılır; burada sadece değişken adı verilir.
+
+database: data/bankatakip.db
+attachments_dir: data/ekstreler
+
+# Kaç gün geriye dönük mail taransın (ilk senkronizasyon için)
+lookback_days: 365
+
+accounts:
+  - name: gmail
+    provider: gmail            # imap.gmail.com
+    email: ornek@gmail.com
+    password_env: GMAIL_APP_PASSWORD
+    folders: ["INBOX"]         # Tüm postalar için: "[Gmail]/All Mail"
+
+  - name: icloud
+    provider: icloud           # imap.mail.me.com
+    email: ornek@icloud.com
+    password_env: ICLOUD_APP_PASSWORD
+    folders: ["INBOX"]
+
+  # Başka bir IMAP sunucusu için:
+  # - name: is-maili
+  #   provider: custom
+  #   host: imap.ornek.com
+  #   port: 993
+  #   email: ben@ornek.com
+  #   password_env: IS_MAIL_PASSWORD
+
+# Bankalar: ekstre maillerini gönderen adres/alan adı ile eşleştirilir.
+# Gönderen adreslerini kendi gelen kutunuzdaki ekstre maillerinden kontrol edin.
+banks:
+  - name: Garanti BBVA
+    senders: ["garantibbva.com.tr", "garanti.com.tr"]
+    subject_keywords: ["ekstre", "hesap özeti", "hesap ozeti"]
+    pdf_password_env: GARANTI_PDF_PASSWORD
+
+  - name: Yapı Kredi
+    senders: ["yapikredi.com.tr"]
+    subject_keywords: ["ekstre", "hesap özeti"]
+    pdf_password_env: YAPIKREDI_PDF_PASSWORD
+
+  - name: İş Bankası
+    senders: ["isbank.com.tr"]
+    subject_keywords: ["ekstre", "hesap özeti"]
+    pdf_password_env: ISBANK_PDF_PASSWORD
+
+  - name: Akbank
+    senders: ["akbank.com"]
+    subject_keywords: ["ekstre", "hesap özeti"]
+    pdf_password_env: AKBANK_PDF_PASSWORD
+
+# İşlem açıklamasına göre otomatik kategori (büyük/küçük harf duyarsız)
+categories:
+  Market: ["migros", "a101", "bim ", "şok", "sok market", "carrefour", "macro"]
+  Yeme-İçme: ["yemeksepeti", "getir", "trendyol yemek", "starbucks", "restoran", "cafe"]
+  Ulaşım: ["shell", "opet", "bp ", "petrol ofisi", "uber", "bitaksi", "istanbulkart"]
+  Alışveriş: ["trendyol", "hepsiburada", "amazon", "n11", "zara", "lc waikiki"]
+  Fatura: ["turkcell", "vodafone", "türk telekom", "turk telekom", "enerjisa", "igdaş", "iski"]
+  Abonelik: ["netflix", "spotify", "youtube", "apple.com", "icloud", "disney"]
+  Ödeme: ["ödeme", "odeme", "payment"]
