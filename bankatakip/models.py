@@ -17,6 +17,7 @@ class Transaction:
     balance: Decimal | None = None   # işlemden sonraki hesap bakiyesi (dökümde varsa)
     account: "AccountRef | None" = None  # bildirimlerde işlemin ait olduğu hesap/kart
     weak: bool = False  # kurallar tutarı buldu ama açıklamayı bulamadı
+    installments: int | None = None  # taksitli alışverişte taksit sayısı ("9 ay vadeli")
 
 
 @dataclass

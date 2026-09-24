@@ -15,8 +15,8 @@ from .parsers import PdfPasswordError, detect_kind, extract_document_text, get_p
 from .categories import CategoryResolver, recategorizer
 from .parsers.generic import GenericParser, detect_account
 from .parsers.notifications import (
-    account_balance, has_amount, notification_account, notification_sign, parse_notification,
-    remaining_limit,
+    account_balance, card_debt, has_amount, info_kind, installments, loan_info, notification_account,
+    notification_sign, parse_notification, remaining_limit,
 )
 from .storage import Storage, file_hash
 
@@ -71,7 +71,7 @@ def import_statement(
         return None, 0
 
     parser = get_parser(bank.name, config.categories)
-    resolver = CategoryResolver(parser, list(config.categories) + storage.used_categories())
+    resolver = make_resolver(parser, config, storage)
     text = extract_document_text(content, bank.pdf_password)
     statement = parser.parse(text)
     if _is_empty(statement) and ai is not None:
@@ -124,9 +124,28 @@ def _record_limit(mail, bank: BankConfig, storage: Storage) -> None:
                                  source="bildirim", commit=True)
 
 
+def _record_info(kind: str, mail, bank: BankConfig, storage: Storage) -> str:
+    """Kart güncel borcu / kredi borç bilgisi maillerini kaydeder; mail günlüğü için özet döndürür."""
+    as_of = (mail.received or datetime.now()).isoformat(timespec="seconds")
+    sample = _sample(mail.body_text, 400)
+    if kind == "kart_borcu":
+        debt = card_debt(mail.body_text)
+        if debt is not None:
+            ref = detect_account(mail.body_text, "kredi_karti", bank.name)
+            storage.add_snapshot(storage.account_id(bank.name, ref), as_of, balance=debt,
+                                 source="bildirim", commit=True)
+            return f"kart borcu {debt} TL · {sample}"
+    elif kind == "kredi":
+        info = loan_info(mail.body_text)
+        if any(v is not None for v in info.values()):
+            storage.update_loan_info(bank.name, as_of, **info)
+            return f"kredi: kalan borç {info['remaining_debt']} · kalan taksit {info['remaining_installments']} · {sample}"
+    return "okunamadı · " + sample
+
+
 # Okuma kuralları değiştiğinde artırılır: atlanan mailler yeniden taranır ve elle
 # değiştirilmemiş işlemlerin kategorileri yeni kurallarla güncellenir.
-RULES_VERSION = "2"
+RULES_VERSION = "3"
 
 
 def apply_rule_updates(config: Config, storage: Storage) -> bool:
@@ -134,9 +153,16 @@ def apply_rule_updates(config: Config, storage: Storage) -> bool:
         return False
     storage.reset_skipped_mails()
     parser = GenericParser(categories=config.categories)
-    storage.recategorize(recategorizer(parser, config.categories))
+    storage.recategorize(recategorizer(parser, config.categories, storage.rule_pairs()))
+    storage.backfill_installments(installments)
     storage.set_meta("rules_version", RULES_VERSION)
     return True
+
+
+def make_resolver(parser, config: Config, storage: Storage) -> CategoryResolver:
+    """Anahtar kelimeler + panelden eklenen kurallar + şimdiye kadar açılmış kategoriler."""
+    return CategoryResolver(parser, list(config.categories) + storage.used_categories(),
+                            rules=storage.rule_pairs())
 
 
 def _is_empty(statement) -> bool:
@@ -153,7 +179,7 @@ def _import_body(mail, bank: BankConfig, config: Config, storage: Storage, accou
                  report: SyncReport, ai: "GeminiClient | None" = None) -> tuple[str, str | None]:
     text = mail.body_text
     parser = get_parser(bank.name, config.categories)
-    resolver = CategoryResolver(parser, list(config.categories) + storage.used_categories())
+    resolver = make_resolver(parser, config, storage)
     statement = parser.parse(text)
     via = "mail gövdesinden"
     if _is_empty(statement):
@@ -255,8 +281,7 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
     def ai_usable() -> bool:
         return ai is not None and not report.ai_paused
 
-    resolver = CategoryResolver(get_parser(bank.name, config.categories),
-                                list(config.categories) + storage.used_categories())
+    resolver = make_resolver(get_parser(bank.name, config.categories), config, storage)
 
     # Kuralların okuyamadığı bildirimler yapay zekaya toplu gönderilir (ücretsiz plan sınırı için)
     pending: list[tuple] = []
@@ -282,6 +307,8 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
             else:
                 resolver.apply(tx)
                 tx.account = notification_account(mail.body_text, mail.subject, bank.name)
+                if tx.amount > 0:
+                    tx.installments = installments(mail.body_text)
                 storage.add_notification(bank.name, account, tx)
                 report.transactions_added += 1
                 record(header, "bildirim_eklendi",
@@ -305,6 +332,14 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
 
         is_statement = bank.matches_subject(header.subject)
         is_notification = notification_sign(header.subject) is not None
+        info = None if is_statement or is_notification else info_kind(header.subject)
+        if info:
+            mail = client.fetch(uid)
+            if mail is None:
+                continue
+            record(header, "bilgi", _record_info(info, mail, bank, storage))
+            storage.mark_mail_processed(account, header.message_id)
+            continue
         if not is_statement and not is_notification:
             storage.mark_mail_processed(account, header.message_id)
             record(header, "konu_eslesmedi")

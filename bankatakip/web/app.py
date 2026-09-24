@@ -21,7 +21,11 @@ from ..config import Config, ConfigError, load_config
 from ..ai import AIError, GeminiClient, ai_enabled
 from ..parsers import PdfPasswordError, detect_kind
 from ..storage import Storage, is_postgres_url
-from ..reminders import send_due_reminders
+from ..categories import compile_rules, match_rules
+from ..diagnostics import check_accounts
+from ..reminders import (
+    send_budget_alerts, send_due_reminders, send_test_mail, send_weekly_summary,
+)
 from ..sync import history_done, import_pdf, sync
 from . import auth
 
@@ -123,6 +127,8 @@ def setup_warnings(config: Config) -> list[str]:
     for account in config.accounts:
         if not os.environ.get(account.password_env):
             warnings.append(f"{account.name} için {account.password_env} tanımlı değil.")
+    for account in config.accounts:
+        warnings.extend(account.notes)
     if not ai_enabled():
         warnings.append("GEMINI_API_KEY tanımlı değil: kuralların okuyamadığı mailler için yapay zeka kapalı.")
     if auth.on_vercel() and not os.environ.get("CRON_SECRET"):
@@ -306,7 +312,7 @@ def report(month: str | None = Query(None, pattern=MONTH_RE), user: str = User,
     if month is None:
         months = [m for m, _, _ in storage.monthly_summary()]
         month = max(months) if months else date.today().strftime("%Y-%m")
-    return _jsonable(storage.report(month))
+    return _jsonable({**storage.report(month), "budgets": storage.budget_status(month)})
 
 
 @app.get("/api/report/trend")
@@ -351,6 +357,11 @@ def cron_sync(request: Request, config: Config = Depends(get_config),
     auth.check_cron(request)
     report = sync(config, storage, time_budget=_time_budget()).as_dict()
     report["reminders_sent"] = send_due_reminders(config, storage)
+    report["budget_alerts"] = send_budget_alerts(config, storage)
+    try:
+        report["weekly_summary"] = send_weekly_summary(config, storage)
+    except Exception as exc:  # özet gönderilemese de tarama sonucu dönsün
+        report["weekly_summary"] = f"gönderilemedi: {exc}"
     return report
 
 
@@ -381,3 +392,98 @@ async def upload(
     if statement_id is None:
         return {"ok": True, "duplicate": True, "transactions": 0}
     return {"ok": True, "duplicate": False, "statement_id": statement_id, "transactions": count}
+
+
+# --- bütçeler ---
+class BudgetInput(BaseModel):
+    category: str
+    amount: Decimal | None = None
+
+
+@app.put("/api/budgets", dependencies=[SameOrigin])
+def set_budget(body: BudgetInput, user: str = User, storage: Storage = Depends(get_storage)):
+    category = " ".join(body.category.split())[:40]
+    if not category or (body.amount is not None and body.amount < 0):
+        raise HTTPException(400, "Geçersiz bütçe.")
+    storage.set_budget(category, body.amount)
+    return {"ok": True}
+
+
+# --- panelden kategori kuralları ---
+class RuleInput(BaseModel):
+    pattern: str
+    category: str
+
+
+@app.get("/api/rules")
+def rules(user: str = User, storage: Storage = Depends(get_storage)):
+    return storage.list_rules()
+
+
+@app.post("/api/rules", dependencies=[SameOrigin])
+def add_rule(body: RuleInput, user: str = User, storage: Storage = Depends(get_storage)):
+    pattern = " ".join(body.pattern.split())[:60]
+    category = " ".join(body.category.split())[:40]
+    if len(pattern) < 3 or not category or category == "Diğer":
+        raise HTTPException(400, "İfade en az 3 karakter olmalı ve bir kategori seçilmeli.")
+    storage.add_rule(pattern, category)
+    compiled = compile_rules([(pattern, category)])
+    # Elle değiştirilmemiş eski işlemlere de uygula
+    changed = storage.recategorize(lambda d, old: category if match_rules(compiled, d) else old)
+    return {"ok": True, "updated": changed}
+
+
+@app.delete("/api/rules/{rule_id}", dependencies=[SameOrigin])
+def delete_rule(rule_id: int, user: str = User, storage: Storage = Depends(get_storage)):
+    if not storage.delete_rule(rule_id):
+        raise HTTPException(404, "Kural bulunamadı.")
+    return {"ok": True}
+
+
+# --- plan: taksitler, krediler, düzenli ödemeler ---
+@app.get("/api/plan")
+def plan(user: str = User, storage: Storage = Depends(get_storage)):
+    return _jsonable({
+        "installments": storage.installment_plan(),
+        "loans": storage.loans_overview(),
+        "recurring": storage.recurring(),
+    })
+
+
+class LoanInput(BaseModel):
+    name: str | None = None
+    total_installments: int | None = None
+    monthly_payment: Decimal | None = None
+
+
+@app.patch("/api/loans/{loan_id}", dependencies=[SameOrigin])
+def update_loan(loan_id: int, body: LoanInput, user: str = User, storage: Storage = Depends(get_storage)):
+    if body.total_installments is not None and not 0 <= body.total_installments <= 600:
+        raise HTTPException(400, "Taksit sayısı 0-600 arası olmalı.")
+    name = " ".join(body.name.split())[:60] if body.name else None
+    if not storage.update_loan(loan_id, name, body.total_installments, body.monthly_payment):
+        raise HTTPException(404, "Kredi bulunamadı.")
+    return {"ok": True}
+
+
+# --- bağlantı testi ---
+@app.get("/api/diagnostics/mail")
+def mail_diagnostics(user: str = User, config: Config = Depends(get_config)):
+    return check_accounts(config)
+
+
+@app.post("/api/diagnostics/test-mail", dependencies=[SameOrigin])
+def test_mail(user: str = User, config: Config = Depends(get_config)):
+    try:
+        return {"ok": True, "message": send_test_mail(config)}
+    except Exception as exc:
+        raise HTTPException(502, f"Mail gönderilemedi: {exc}")
+
+
+@app.post("/api/diagnostics/weekly", dependencies=[SameOrigin])
+def weekly_now(user: str = User, config: Config = Depends(get_config),
+               storage: Storage = Depends(get_storage)):
+    try:
+        return {"ok": True, "message": send_weekly_summary(config, storage, force=True)}
+    except Exception as exc:
+        raise HTTPException(502, f"Özet gönderilemedi: {exc}")

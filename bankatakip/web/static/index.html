@@ -99,6 +99,18 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .heat td:first-child { text-align: left; }
 .heat td.cell { border-bottom: 2px solid var(--surface); }
 .heat th:first-child, .heat td:first-child { position: sticky; left: 0; background: var(--surface); z-index: 1; }
+.small { font-size: 13px; }
+.ok { color: var(--positive); }
+.bad { color: var(--danger); }
+.brow { display: grid; grid-template-columns: minmax(90px, 160px) 1fr auto auto; gap: 10px; align-items: center; padding: 6px 4px; }
+.brow .bar-fill.warn { background: var(--warn); }
+.brow .bar-fill.over { background: var(--danger); }
+.diag { border-top: 1px solid var(--border); padding: 10px 0; }
+.diag:first-child { border-top: 0; }
+.diag ul { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: var(--warn); }
+.loan { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 10px 0; border-top: 1px solid var(--border); }
+.loan:first-child { border-top: 0; }
+.loan input { width: 90px; }
 [hidden] { display: none !important; }
 @media (max-width: 640px) {
   .bar { gap: 6px 12px; padding-bottom: 6px; }
@@ -112,12 +124,14 @@ dd { margin: 0; overflow-wrap: anywhere; }
   td.num { white-space: nowrap; }
   td.desc { min-width: 0; }
   .card { padding: 12px; }
-  #rep-kpis { grid-template-columns: 1fr 1fr; gap: 10px; }
-  #rep-kpis .value { font-size: 19px; }
+  #rep-kpis, #plan-kpis { grid-template-columns: 1fr 1fr; gap: 10px; }
+  #rep-kpis .value, #plan-kpis .value { font-size: 19px; }
   .report-bar strong { min-width: 0; }
   .bar-row { grid-template-columns: 1fr auto; gap: 2px 10px; }
   .bar-row > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
   .bar-val { display: flex; gap: 8px; align-items: baseline; }
+  .brow { grid-template-columns: 1fr auto auto; gap: 2px 10px; }
+  .brow > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
 }
 </style>
 </head>
@@ -128,6 +142,7 @@ dd { margin: 0; overflow-wrap: anywhere; }
     <nav id="nav">
       <button data-tab="overview" class="active">Özet</button>
       <button data-tab="reports">Raporlar</button>
+      <button data-tab="plan">Plan</button>
       <button data-tab="accounts">Hesaplar</button>
       <button data-tab="statements">Ekstreler</button>
       <button data-tab="transactions">İşlemler</button>
@@ -176,6 +191,16 @@ dd { margin: 0; overflow-wrap: anywhere; }
       <a class="btn ghost" id="rep-csv" href="#" download>CSV indir</a>
     </div>
     <div class="grid" id="rep-kpis"></div>
+    <div class="card" style="margin-bottom:14px">
+      <h2>Bütçeler</h2>
+      <p class="muted small" style="margin-top:-6px">Kategori başına aylık sınır. %80'e gelince ve aşılınca mail gelir.</p>
+      <div id="rep-budgets"></div>
+      <form id="budget-form" class="row" style="margin-top:10px">
+        <select id="budget-cat" aria-label="Kategori"></select>
+        <input id="budget-amount" type="number" min="0" step="50" inputmode="numeric" placeholder="Aylık tutar (TL)" aria-label="Aylık tutar" required>
+        <button class="btn ghost" type="submit">Bütçe kaydet</button>
+      </form>
+    </div>
     <div class="two">
       <div class="card"><h2>Kategoriler</h2><p class="muted" style="font-size:13px;margin-top:-6px">Ayrıntı için bir kategoriye tıklayın. Transferler ve kart ödemeleri dahil değil.</p><div class="bars" id="rep-cats"></div></div>
       <div class="card"><h2>En çok harcanan yerler</h2><div id="rep-merchants"></div></div>
@@ -193,6 +218,36 @@ dd { margin: 0; overflow-wrap: anywhere; }
     <div class="card" style="margin-top:14px">
       <h2>Günlük harcama</h2>
       <div class="chart-box" style="height:200px"><canvas id="rep-daily"></canvas></div>
+    </div>
+  </section>
+
+  <section id="tab-plan" hidden>
+    <div class="grid" id="plan-kpis"></div>
+    <div class="card">
+      <h2>Önümüzdeki 12 ay: taksit ve kredi ödemeleri</h2>
+      <p class="muted small" style="margin-top:-6px" id="plan-chart-note"></p>
+      <div class="chart-box"><canvas id="plan-chart"></canvas></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>Krediler</h2>
+      <p class="muted small" style="margin-top:-6px">Ödemeler "Kredi Ödemesi" işlemlerinden bulunur. Toplam taksit sayısını girerseniz kalan taksit ve bitiş tarihi hesaplanır.</p>
+      <div id="plan-loans"></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>Taksitli alışverişler</h2>
+      <p class="muted small" style="margin-top:-6px">Kart bildirimindeki "N ay vadeli" bilgisinden. İlk taksit alışverişin ertesi ayına yazılır.</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Tarih</th><th>Açıklama</th><th class="num">Aylık</th><th class="num">Taksit</th><th class="num hide-sm">Kalan</th></tr></thead>
+        <tbody id="plan-inst"></tbody>
+      </table></div>
+    </div>
+    <div class="card" style="margin-top:14px">
+      <h2>Düzenli ödemeler</h2>
+      <p class="muted small" style="margin-top:-6px">Son 6 ayın en az 3'ünde benzer tutarla tekrarlanan harcamalar (abonelik, fatura, kira…).</p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Açıklama</th><th class="hide-sm">Kategori</th><th class="num">Ortalama</th><th class="num hide-sm">Ay</th><th class="num">Sonraki</th></tr></thead>
+        <tbody id="plan-recurring"></tbody>
+      </table></div>
     </div>
   </section>
 
@@ -225,6 +280,15 @@ dd { margin: 0; overflow-wrap: anywhere; }
         <input id="f-until" type="date" title="Bitiş">
       </div>
       <p class="muted" id="tx-summary"></p>
+      <div class="notice" id="rule-offer" hidden>
+        <form id="rule-form" class="row">
+          <span>Açıklamasında</span>
+          <input id="rule-pattern" required minlength="3" style="flex:1 1 160px" aria-label="İfade">
+          <span>geçen işlemler hep <strong id="rule-cat"></strong> olsun</span>
+          <button class="btn" type="submit">Kural olarak kaydet</button>
+          <button class="btn link" type="button" id="rule-close" style="color:var(--muted)">Kapat</button>
+        </form>
+      </div>
       <div class="table-wrap"><table>
         <thead><tr><th>Tarih</th><th class="hide-sm">Banka</th><th>Açıklama</th><th class="hide-sm">Kategori</th><th class="num">Tutar</th></tr></thead>
         <tbody id="tx-body"></tbody>
@@ -253,6 +317,18 @@ dd { margin: 0; overflow-wrap: anywhere; }
     </div>
     <div class="card" style="margin-bottom:14px">
       <div class="row" style="justify-content:space-between;margin-bottom:8px">
+        <h2 style="margin:0">Bağlantı testi</h2>
+        <div class="row">
+          <button class="btn ghost" id="diag-btn">Bağlantıları test et</button>
+          <button class="btn ghost" id="testmail-btn">Test maili gönder</button>
+          <button class="btn ghost" id="weekly-btn">Haftalık özeti şimdi gönder</button>
+        </div>
+      </div>
+      <p class="muted small" style="margin-top:0">Her mail hesabı için okuma (IMAP) ve gönderme (SMTP) girişini dener. Şifreler gösterilmez, sadece uzunluğu ve biçimi kontrol edilir.</p>
+      <div id="diag-result"></div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <div class="row" style="justify-content:space-between;margin-bottom:8px">
         <h2 style="margin:0">İncelenen mailler</h2>
         <button class="btn ghost" id="reset-btn" title="Ekstre bulunamayan mailleri bir sonraki taramada yeniden dener">Atlananları yeniden dene</button>
       </div>
@@ -261,6 +337,11 @@ dd { margin: 0; overflow-wrap: anywhere; }
         <thead><tr><th>Tarih</th><th>Banka</th><th>Konu</th><th>Sonuç</th></tr></thead>
         <tbody id="maillog-body"></tbody>
       </table></div>
+    </div>
+    <div class="card" style="margin-bottom:14px">
+      <h2>Kategori kuralları</h2>
+      <p class="muted small" style="margin-top:-6px">İşlemler sekmesinde kategori değiştirince çıkan "kural olarak kaydet" ile eklenir; hazır anahtar kelimelerden önce uygulanır.</p>
+      <div id="rules-list"></div>
     </div>
     <div class="card">
       <h2>Ayarlar</h2>
@@ -332,7 +413,7 @@ function showTab(name) {
   document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll("section").forEach((s) => (s.hidden = s.id !== "tab-" + name));
   flash("");
-  ({ overview: loadOverview, reports: loadReport, accounts: loadAccounts, statements: loadStatements, transactions: loadTransactions, settings: renderSettings })[name]();
+  ({ overview: loadOverview, reports: loadReport, plan: loadPlan, accounts: loadAccounts, statements: loadStatements, transactions: loadTransactions, settings: renderSettings })[name]();
 }
 
 function daysUntil(iso) {
@@ -547,11 +628,130 @@ async function loadReport(month) {
     <tr><td class="muted" style="width:24px">${n + 1}</td><td class="desc">${esc(m.description)}<div class="delta">${esc(m.category)} · ${m.count} işlem</div></td>
     <td class="num">${money(m.total)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty">–</div>`;
 
+  renderBudgets(report.budgets);
   drawPivot(report.pivot);
   drawDaily(report.daily);
   if (repCategory && report.categories.some((c) => c.name === repCategory)) showCategory(repCategory);
   else { repCategory = null; $("rep-detail").hidden = true; }
 }
+
+const NOT_BUDGETED = new Set(["Transfer", "Kart Ödemesi", "Maaş", "Ödeme"]);
+function renderBudgets(budgets) {
+  $("rep-budgets").innerHTML = budgets.length ? budgets.map((b) => {
+    const pct = Math.round(b.ratio * 100);
+    const [cls, label] = b.ratio >= 1 ? ["over", "aşıldı"] : b.ratio >= 0.8 ? ["warn", "yaklaşıyor"] : ["", ""];
+    return `<div class="brow">
+      <div class="bar-name"><span class="dot" style="background:${colorOf(b.category)}"></span>${esc(b.category)}</div>
+      <div class="bar-track" title="%${pct}"><div class="bar-fill ${cls}" style="width:${Math.min(b.ratio, 1) * 100}%"></div></div>
+      <div class="bar-val">${money(b.spent)} / ${money(b.amount)} <span class="delta ${b.ratio >= 1 ? "up" : ""}">%${pct}${label ? " · " + label : ""}</span></div>
+      <button class="btn link" data-budget-del="${esc(b.category)}" title="Bütçeyi kaldır" aria-label="${esc(b.category)} bütçesini kaldır">✕</button>
+    </div>`;
+  }).join("") : `<p class="muted small" style="margin:0">Henüz bütçe yok. Aşağıdan kategori seçip aylık tutar girin.</p>`;
+  const cats = me.categories.filter((c) => !NOT_BUDGETED.has(c));
+  const cur = $("budget-cat").value;
+  $("budget-cat").innerHTML = cats.map((c) => `<option>${esc(c)}</option>`).join("");
+  if (cats.includes(cur)) $("budget-cat").value = cur;
+}
+
+async function saveBudget(category, amount) {
+  try {
+    await api("/api/budgets", { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category, amount }) });
+    loadReport(repMonth);
+  } catch (err) { flash(err.message, true); }
+}
+$("budget-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  saveBudget($("budget-cat").value, Number($("budget-amount").value));
+  $("budget-amount").value = "";
+});
+$("rep-budgets").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-budget-del]");
+  if (b) saveBudget(b.dataset.budgetDel, null);
+});
+
+// ---- Plan: taksitler, krediler, düzenli ödemeler ----
+let planChart = null;
+const monthShort = (m) => MONTH.format(new Date(m + "-01T00:00:00"));
+const addMonths = (m, n) => { const [y, mo] = m.split("-").map(Number); const i = y * 12 + mo - 1 + n;
+  return `${Math.floor(i / 12)}-${String(i % 12 + 1).padStart(2, "0")}`; };
+
+async function loadPlan() {
+  const p = await api("/api/plan");
+  const inst = p.installments, months = inst.months.map((m) => m.month);
+  const activeLoans = p.loans.filter((l) => l.monthly && l.remaining !== 0);
+  // Kredi taksitleri: sonraki ödeme ayından itibaren kalan taksit kadar (bilinmiyorsa 12 ay boyunca)
+  let openEnded = false;
+  const loanSeries = months.map((m) => activeLoans.reduce((sum, l) => {
+    if (!l.next_payment_month || m < l.next_payment_month) return sum;
+    if (l.remaining == null) { openEnded = true; return sum + l.monthly; }
+    return m < addMonths(l.next_payment_month, l.remaining) ? sum + l.monthly : sum;
+  }, 0));
+  const loanMonthly = activeLoans.reduce((s, l) => s + l.monthly, 0);
+  const recurringMonthly = p.recurring.reduce((s, r) => s + r.average, 0);
+  $("plan-kpis").innerHTML = [
+    ["Bu ay karta düşen taksit", money(inst.this_month), `${inst.items.length} taksitli alışveriş`],
+    ["Kalan taksit borcu", money(inst.remaining_total), "tüm taksitli alışverişler"],
+    ["Aylık kredi ödemesi", money(loanMonthly), `${activeLoans.length} kredi`],
+    ["Düzenli ödemeler", money(recurringMonthly), `ayda ${p.recurring.length} ödeme`],
+  ].map(([l, v, sub]) => `<div class="card stat"><div class="label">${l}</div><div class="value">${v}</div><div class="sub">${sub}</div></div>`).join("");
+  $("plan-chart-note").textContent = openEnded
+    ? "Toplam taksit sayısı girilmemiş krediler 12 ay boyunca sürüyor varsayıldı." : "";
+
+  if (planChart) planChart.destroy();
+  if (window.Chart) {
+    const muted = cssVar("--muted"), border = cssVar("--border"), surface = cssVar("--surface");
+    const ds = (label, data, color) => ({ label, data, backgroundColor: color, borderColor: surface,
+      borderWidth: { top: 2, bottom: 0, left: 0, right: 0 }, borderSkipped: false, borderRadius: 3, maxBarThickness: 36 });
+    planChart = new Chart($("plan-chart"), {
+      type: "bar",
+      data: { labels: months.map(monthShort),
+        datasets: [ds("Kredi", loanSeries, cssVar("--c1")), ds("Kart taksitleri", inst.months.map((m) => m.total), cssVar("--c2"))] },
+      options: { maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+        plugins: { legend: { position: "bottom", labels: { color: muted, boxWidth: 10, boxHeight: 10 } },
+          tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${money(c.raw)}`,
+            footer: (items) => `Toplam: ${money(items.reduce((s, i) => s + i.raw, 0))}` } } },
+        scales: { x: { stacked: true, grid: { display: false }, ticks: { color: muted } },
+          y: { stacked: true, grid: { color: border }, ticks: { color: muted, callback: (v) => TRY.format(v).replace(/,00$/, "") } } } },
+    });
+  }
+
+  $("plan-loans").innerHTML = p.loans.length ? p.loans.map((l) => {
+    const status = l.remaining == null ? `<span class="muted">Kalan taksit için toplam taksit sayısını girin.</span>`
+      : l.remaining === 0 ? `<span class="ok">Bitti</span>`
+      : `Kalan <strong>${l.remaining} taksit</strong> · yaklaşık ${money(l.remaining_estimate)} · son taksit ${l.end_month ? monthLabel(l.end_month) : "–"}`;
+    const bankInfo = l.remaining_debt != null
+      ? `<div class="muted small">Bankaya göre kalan borç ${money(Number(l.remaining_debt))} (${fmtDate(l.info_as_of)})</div>` : "";
+    return `<div class="loan"><div><strong>${esc(l.name)}</strong>
+        <div class="small">Aylık ${money(l.monthly)} · ${l.paid} taksit ödendi (${money(l.total_paid)}) · son ödeme ${l.last_payment_month ? monthLabel(l.last_payment_month) : "–"}</div>
+        <div class="small">${status}</div>${bankInfo}</div>
+      <form class="row" data-loan="${l.id}"><label class="small muted" for="loan-${l.id}">Toplam taksit</label>
+        <input id="loan-${l.id}" type="number" min="1" max="600" value="${l.total_installments ?? ""}" placeholder="ör. 36">
+        <button class="btn ghost" type="submit">Kaydet</button></form></div>`;
+  }).join("") : `<div class="empty">Kredi ödemesi bulunamadı.</div>`;
+
+  $("plan-inst").innerHTML = inst.items.length ? inst.items.map((i) => `<tr><td>${fmtDate(i.date)}</td>
+      <td class="desc">${esc(i.description)}<div class="muted small">${esc(i.bank)} · toplam ${money(i.total)} · son taksit ${monthLabel(i.last_month)}</div></td>
+      <td class="num">${money(i.monthly)}</td><td class="num">${i.paid}/${i.installments}</td><td class="num hide-sm">${money(i.remaining_amount)}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="empty">Devam eden taksitli alışveriş yok.</td></tr>`;
+
+  $("plan-recurring").innerHTML = p.recurring.length ? p.recurring.map((r) => `<tr>
+      <td class="desc">${esc(r.description)}<div class="muted small">${esc(r.bank)} · son ${fmtDate(r.last_date)}</div></td>
+      <td class="hide-sm"><span class="bar-name"><span class="dot" style="background:${colorOf(r.category || "Diğer")}"></span>${esc(r.category || "Diğer")}</span></td>
+      <td class="num">${money(r.average)}</td><td class="num hide-sm">${r.months}</td><td class="num">${monthShort(r.next_month)}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="empty">Düzenli ödeme bulunamadı.</td></tr>`;
+}
+
+$("plan-loans").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.target.closest("[data-loan]");
+  const value = form.querySelector("input").value;
+  try {
+    await api(`/api/loans/${form.dataset.loan}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ total_installments: value ? Number(value) : null }) });
+    loadPlan();
+  } catch (err) { flash(err.message, true); }
+});
 
 function drawPivot(pivot) {
   const max = Math.max(...pivot.rows.flatMap((r) => r.values), 1);
@@ -643,13 +843,13 @@ $("statements-body").addEventListener("click", async (e) => {
   }
 });
 
-let txStatement = null, txTimer = null;
+let txStatement = null, txTimer = null, txRows = [];
 async function loadTransactions() {
   const p = new URLSearchParams();
   for (const [k, id] of [["q", "f-q"], ["bank", "f-bank"], ["category", "f-category"], ["since", "f-since"], ["until", "f-until"]])
     if ($(id).value) p.set(k, $(id).value);
   if (txStatement) p.set("statement_id", txStatement);
-  const rows = await api("/api/transactions?" + p);
+  const rows = txRows = await api("/api/transactions?" + p);
   const spend = rows.filter((r) => r.amount > 0).reduce((s, r) => s + r.amount, 0);
   $("tx-summary").innerHTML = `${rows.length} işlem · harcama toplamı ${money(spend)}` +
     (txStatement ? ` · <a href="#" id="clear-statement">tek ekstre gösteriliyor, filtreyi kaldır</a>` : "");
@@ -688,6 +888,33 @@ $("tx-body").addEventListener("change", async (e) => {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ category: sel.value }),
     });
+    const row = txRows.find((r) => String(r.id) === sel.dataset.tx);
+    if (row && sel.value !== "Diğer") offerRule(row.description, sel.value);
+  } catch (err) { flash(err.message, true); }
+});
+
+// "Hep böyle yap": açıklamanın rakam içermeyen ilk kelimeleri önerilir, kullanıcı düzenleyebilir
+function suggestPattern(description) {
+  const words = description.split(/\s+/).map((w) => w.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, ""));
+  const lead = [];
+  for (const w of description.split(/\s+/)) { if (/\d/.test(w) || lead.length === 3) break; lead.push(w); }
+  const text = lead.join(" ").replace(/[^\p{L}\s.&'-]+$/u, "").trim();
+  return text.length >= 3 ? text : (words.find((w) => w.length >= 3 && !/\d/.test(w)) || description.slice(0, 20));
+}
+function offerRule(description, category) {
+  $("rule-pattern").value = suggestPattern(description);
+  $("rule-cat").textContent = category;
+  $("rule-offer").hidden = false;
+}
+$("rule-close").addEventListener("click", () => ($("rule-offer").hidden = true));
+$("rule-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const r = await api("/api/rules", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pattern: $("rule-pattern").value, category: $("rule-cat").textContent }) });
+    $("rule-offer").hidden = true;
+    flash(`Kural kaydedildi; ${r.updated} işlemin kategorisi güncellendi. Yeni gelenler de bu kategoriye girecek.`);
+    loadTransactions();
   } catch (err) { flash(err.message, true); }
 });
 
@@ -700,7 +927,7 @@ const MAIL_STATUS = {
   hata: ["Okunamadı", "soon"],
   bildirim_eklendi: ["Harcama bildirimi eklendi", ""],
   bildirim_okunamadi: ["Bildirim okunamadı", "near"],
-  bilgi: ["Bilgi (tutar yok)", ""],
+  bilgi: ["Bilgi", ""],
 };
 
 async function loadMailLog() {
@@ -721,8 +948,49 @@ $("reset-btn").addEventListener("click", async () => {
   } catch (err) { flash(err.message, true); }
 });
 
+async function loadRules() {
+  const rules = await api("/api/rules");
+  $("rules-list").innerHTML = rules.length ? `<table><tbody>${rules.map((r) => `<tr>
+      <td class="desc">"${esc(r.pattern)}"</td><td>→ ${esc(r.category)}</td>
+      <td class="num"><button class="btn link" data-rule-del="${r.id}">Sil</button></td></tr>`).join("")}</tbody></table>`
+    : `<p class="muted small" style="margin:0">Henüz kural yok.</p>`;
+}
+$("rules-list").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-rule-del]");
+  if (!b) return;
+  try { await api(`/api/rules/${b.dataset.ruleDel}`, { method: "DELETE" }); loadRules(); }
+  catch (err) { flash(err.message, true); }
+});
+
+const mark = (r) => r ? `<span class="${r.ok ? "ok" : "bad"}">${r.ok ? "✓" : "✗"}</span> ${esc(r.message)}` +
+  (r.hint ? `<div class="small"><strong>Ne yapmalı:</strong> ${esc(r.hint)}</div>` : "") : "–";
+$("diag-btn").addEventListener("click", async () => {
+  const btn = $("diag-btn");
+  btn.disabled = true; $("diag-result").innerHTML = `<p class="muted small">Test ediliyor… (hesap başına birkaç saniye)</p>`;
+  try {
+    const rows = await api("/api/diagnostics/mail");
+    $("diag-result").innerHTML = rows.length ? rows.map((a) => `<div class="diag">
+        <strong>${esc(a.name)}</strong> · ${esc(a.email)} <span class="muted small">· şifre ${a.password_length} karakter (${esc(a.password_env)})</span>
+        ${a.warnings.length ? `<ul>${a.warnings.map((w) => `<li>${esc(w)}</li>`).join("")}</ul>` : ""}
+        <div class="small" style="margin-top:6px">Okuma (IMAP): ${mark(a.imap)}</div>
+        <div class="small">Gönderme (SMTP): ${mark(a.smtp)}</div></div>`).join("")
+      : `<p class="bad small">Tanımlı mail hesabı yok (GMAIL_EMAIL / ICLOUD_EMAIL).</p>`;
+  } catch (err) { $("diag-result").innerHTML = `<div class="notice error">${esc(err.message)}</div>`; }
+  finally { btn.disabled = false; }
+});
+for (const [id, path, done] of [["testmail-btn", "/api/diagnostics/test-mail", "Test maili gönderildi"],
+                                ["weekly-btn", "/api/diagnostics/weekly", "Haftalık özet gönderildi"]]) {
+  $(id).addEventListener("click", async () => {
+    $(id).disabled = true;
+    try { const r = await api(path, { method: "POST" }); flash(`${done}: ${r.message}`); }
+    catch (err) { flash(err.message, true); }
+    finally { $(id).disabled = false; }
+  });
+}
+
 function renderSettings() {
   loadMailLog();
+  loadRules();
   const accounts = me.accounts.length ? me.accounts.map((a) => `${esc(a.name)}: ${esc(a.email)} <span class="pill ${a.history_done ? "" : "near"}">${
       a.history_done ? "geçmiş tarandı, yeni mailler izleniyor" : "geçmiş mailler henüz taranmadı"}</span>`).join("<br>")
     : `<span style="color:var(--danger)">Tanımlı değil (GMAIL_EMAIL / ICLOUD_EMAIL)</span>`;

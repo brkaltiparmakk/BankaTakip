@@ -28,10 +28,13 @@ class MailAccount:
     port: int = 993
     # None: otomatik (Gmail'de "Tüm Postalar", diğerlerinde Gelen Kutusu + Arşiv)
     folders: list[str] | None = None
+    # Ortam değişkenleri karıştırılmışsa (adres şifre alanında) düzeltilmiş şifre ve açıklaması
+    password_value: str | None = None
+    notes: list[str] = field(default_factory=list)
 
     @property
     def password(self) -> str:
-        value = (os.environ.get(self.password_env) or "").strip()
+        value = (self.password_value or os.environ.get(self.password_env) or "").strip()
         if self.provider == "gmail":
             # Google uygulama şifresini "abcd efgh ijkl mnop" diye gösterir; boşluklar şifreye dahil değil
             value = value.replace(" ", "")
@@ -130,6 +133,25 @@ def _parse_account(acc: dict) -> MailAccount:
     )
 
 
+def _env_account(provider: str, email_env: str, password_env: str) -> MailAccount:
+    """Ortam değişkenlerinden hesap. Adres ile şifre yer değiştirmişse (adres alanında "@" yok,
+    şifre alanında e-posta var) otomatik düzeltilir ve not düşülür."""
+    email = os.environ[email_env].strip()
+    password = (os.environ.get(password_env) or "").strip()
+    notes = []
+    swapped = "@" not in email and EMAIL_RE.search(password) is not None
+    if swapped:
+        email, password = password, email
+        notes.append(f"{email_env} ile {password_env} yer değiştirmiş görünüyor; otomatik düzeltildi. "
+                     "Vercel'de iki değeri yer değiştirmeniz önerilir.")
+    account = _parse_account({"name": provider, "provider": provider, "email": email,
+                              "password_env": password_env})
+    if swapped:
+        account.password_value = password
+    account.notes = notes
+    return account
+
+
 def load_config(path: str | Path = "config.yaml") -> Config:
     load_dotenv()
     raw = _read_raw(Path(path))
@@ -139,10 +161,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
     names = {a.name for a in accounts}
     for provider, (email_env, password_env) in ENV_ACCOUNTS.items():
         if provider not in names and os.environ.get(email_env):
-            accounts.append(_parse_account({
-                "name": provider, "provider": provider,
-                "email": os.environ[email_env], "password_env": password_env,
-            }))
+            accounts.append(_env_account(provider, email_env, password_env))
 
     banks = [
         BankConfig(

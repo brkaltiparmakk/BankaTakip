@@ -93,6 +93,34 @@ CREATE TABLE IF NOT EXISTS mail_log (
     created_at  TEXT NOT NULL
 );
 
+-- Aylık kategori bütçeleri
+CREATE TABLE IF NOT EXISTS budgets (
+    category   TEXT PRIMARY KEY,
+    amount     TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- Panelden eklenen kurallar: açıklamada bu ifade geçerse bu kategori (anahtar kelimelerden önce)
+CREATE TABLE IF NOT EXISTS category_rules (
+    id         {pk},
+    pattern    TEXT NOT NULL UNIQUE,
+    category   TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+-- Krediler (banka başına): ödemeler "Kredi Ödemesi" işlemlerinden, taksit sayısı elle veya mailden
+CREATE TABLE IF NOT EXISTS loans (
+    id                     {pk},
+    bank                   TEXT NOT NULL UNIQUE,
+    name                   TEXT NOT NULL,
+    total_installments     INTEGER,
+    monthly_payment        TEXT,
+    remaining_debt         TEXT,
+    remaining_installments INTEGER,
+    info_as_of             TEXT,
+    created_at             TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date);
 CREATE INDEX IF NOT EXISTS idx_tx_statement ON transactions(statement_id);
 """
@@ -171,6 +199,7 @@ class Storage:
         ("transactions", "balance", "TEXT"),
         ("transactions", "account_id", "INTEGER"),
         ("transactions", "category_manual", "INTEGER"),
+        ("transactions", "installments", "INTEGER"),
     ]
 
     def _migrate(self) -> None:
@@ -392,9 +421,9 @@ class Storage:
                 ).fetchone()["id"]
             self._execute(
                 """INSERT INTO transactions (statement_id, bank, date, description, amount, category,
-                       account_id) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                       account_id, installments) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (statement_id, bank, tx.date.isoformat(), tx.description, str(tx.amount), tx.category,
-                 account_id),
+                 account_id, tx.installments),
             )
             self.conn.commit()
         except Exception:
@@ -703,3 +732,266 @@ class Storage:
             months.append(f"{year:04d}-{mon:02d}")
             year, mon = (year, mon - 1) if mon > 1 else (year - 1, 12)
         return [{"month": m, "total": max(totals.get(m, Decimal(0)), Decimal(0))} for m in reversed(months)]
+
+    # --- bütçeler ---
+    def list_budgets(self) -> list[dict]:
+        return [{"category": r["category"], "amount": Decimal(r["amount"])}
+                for r in self._all("SELECT category, amount FROM budgets ORDER BY category")]
+
+    def set_budget(self, category: str, amount: Decimal | None) -> None:
+        """amount None veya 0 ise bütçe kaldırılır."""
+        try:
+            self._execute("DELETE FROM budgets WHERE category = ?", (category,))
+            if amount:
+                self._execute("INSERT INTO budgets (category, amount, created_at) VALUES (?, ?, ?)",
+                              (category, str(amount), _now()))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def budget_status(self, month: str) -> list[dict]:
+        """Bütçesi olan kategorilerin o ayki net harcaması ve doluluk oranı."""
+        spent: dict[str, Decimal] = {}
+        for row in self._report_rows():
+            if row["date"][:7] == month and self._is_spending(row["category"]):
+                cat = row["category"] or "Diğer"
+                spent[cat] = spent.get(cat, Decimal(0)) + Decimal(row["amount"])
+        result = []
+        for b in self.list_budgets():
+            used = max(spent.get(b["category"], Decimal(0)), Decimal(0))
+            result.append({**b, "spent": used, "ratio": used / b["amount"] if b["amount"] else Decimal(0)})
+        return sorted(result, key=lambda b: -b["ratio"])
+
+    # --- panelden eklenen kategori kuralları ---
+    def list_rules(self) -> list[dict]:
+        return self._all("SELECT id, pattern, category FROM category_rules ORDER BY id")
+
+    def rule_pairs(self) -> list[tuple[str, str]]:
+        return [(r["pattern"], r["category"]) for r in self.list_rules()]
+
+    def add_rule(self, pattern: str, category: str) -> None:
+        try:
+            self._execute("DELETE FROM category_rules WHERE pattern = ?", (pattern,))
+            self._execute("INSERT INTO category_rules (pattern, category, created_at) VALUES (?, ?, ?)",
+                          (pattern, category, _now()))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def delete_rule(self, rule_id: int) -> bool:
+        return self._write("DELETE FROM category_rules WHERE id = ?", (rule_id,)).rowcount > 0
+
+    # --- taksitler ---
+    def installment_plan(self, today: date | None = None, months: int = 12) -> dict:
+        """Taksitli alışverişler ve önümüzdeki aylara düşen taksit tutarları. İlk taksit alışverişin
+        ertesi ayına yazılır (ekstre kesimi). İptal edilen (aynı banka ve tutarda eksi işlemi olan)
+        alışverişler sayılmaz."""
+        today = today or date.today()
+        this_month = _month_index(today.isoformat())
+        rows = self._all(
+            "SELECT id, bank, date, description, amount, category, installments FROM transactions "
+            "WHERE installments IS NOT NULL AND installments > 1 ORDER BY date DESC")
+        refunds = {(r["bank"], abs(Decimal(r["amount"]))) for r in self._all(
+            "SELECT bank, amount FROM transactions WHERE amount LIKE ?", ("-%",))}
+        schedule = {this_month + i: Decimal(0) for i in range(months)}
+        items = []
+        for r in rows:
+            total = Decimal(r["amount"])
+            if total <= 0 or (r["bank"], total) in refunds:
+                continue
+            n = int(r["installments"])
+            monthly = (total / n).quantize(Decimal("0.01"))
+            first = _month_index(r["date"]) + 1
+            last = first + n - 1
+            paid = min(max(this_month - first, 0), n)  # bu aydan önceki aylar ödenmiş sayılır
+            remaining = n - paid
+            if remaining <= 0:
+                continue
+            for m in range(max(first, this_month), last + 1):
+                if m in schedule:
+                    schedule[m] += monthly
+            items.append({"id": r["id"], "bank": r["bank"], "date": r["date"], "description": r["description"],
+                          "category": r["category"], "total": total, "installments": n, "monthly": monthly,
+                          "paid": paid, "remaining": remaining, "remaining_amount": monthly * remaining,
+                          "last_month": _month_name(last)})
+        return {
+            "months": [{"month": _month_name(m), "total": v} for m, v in sorted(schedule.items())],
+            "items": items,
+            "this_month": schedule[this_month],
+            "remaining_total": sum((i["remaining_amount"] for i in items), Decimal(0)),
+        }
+
+    def backfill_installments(self, parse) -> int:
+        """Daha önce eklenmiş bildirimlerin taksit sayısını mail günlüğündeki gövde örneğinden
+        doldurur (detay: "<açıklama>: <tutar> TL · ... 9 ay vadeli ...")."""
+        import re
+        from datetime import timedelta
+
+        filled = 0
+        rows = self._all("SELECT bank, received_at, detail FROM mail_log WHERE status = 'bildirim_eklendi' "
+                         "AND detail LIKE ? ORDER BY received_at", ("%vadeli%",))
+        try:
+            for row in rows:
+                n = parse(row["detail"] or "")
+                m = re.search(r": (-?\d+(?:\.\d+)?) TL ·", row["detail"] or "")
+                if not n or not m or not row["received_at"]:
+                    continue
+                received = date.fromisoformat(row["received_at"][:10])
+                tx = self._one(
+                    """SELECT id FROM transactions WHERE bank = ? AND amount = ? AND installments IS NULL
+                       AND date >= ? AND date <= ? ORDER BY date LIMIT 1""",
+                    (row["bank"], m.group(1), (received - timedelta(days=5)).isoformat(),
+                     (received + timedelta(days=1)).isoformat()))
+                if tx:
+                    self._execute("UPDATE transactions SET installments = ? WHERE id = ?", (n, tx["id"]))
+                    filled += 1
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return filled
+
+    # --- krediler ---
+    def _loan_payments(self) -> tuple[dict[str, dict[int, Decimal]], dict[str, dict[int, str]]]:
+        """(banka → {ay: o ay ödenen kredi taksiti}, banka → {ay: o ayki son ödeme tarihi})."""
+        amounts: dict[str, dict[int, Decimal]] = {}
+        dates: dict[str, dict[int, str]] = {}
+        for r in self._all("SELECT bank, date, amount FROM transactions WHERE category = 'Kredi Ödemesi'"):
+            amount = Decimal(r["amount"])
+            if amount > 0:
+                m = _month_index(r["date"])
+                months = amounts.setdefault(r["bank"], {})
+                months[m] = months.get(m, Decimal(0)) + amount
+                last = dates.setdefault(r["bank"], {})
+                last[m] = max(last.get(m, ""), r["date"][:10])
+        return amounts, dates
+
+    def loans_overview(self, today: date | None = None) -> list[dict]:
+        today = today or date.today()
+        payments, pay_dates = self._loan_payments()
+        for bank in payments:
+            if not self._one("SELECT id FROM loans WHERE bank = ?", (bank,)):
+                self._execute("INSERT INTO loans (bank, name, created_at) VALUES (?, ?, ?)",
+                              (bank, f"{bank} kredisi", _now()))
+        self.conn.commit()
+        result = []
+        for loan in self._all("SELECT * FROM loans ORDER BY bank"):
+            months = payments.get(loan["bank"], {})
+            paid = len(months)
+            last_month = max(months) if months else None
+            monthly = Decimal(loan["monthly_payment"]) if loan["monthly_payment"] else \
+                (months[last_month] if last_month is not None else None)
+            remaining = None
+            if loan["remaining_installments"] is not None and loan["info_as_of"]:
+                after = sum(1 for d in pay_dates.get(loan["bank"], {}).values() if d > loan["info_as_of"][:10])
+                remaining = max(int(loan["remaining_installments"]) - after, 0)
+            elif loan["total_installments"]:
+                remaining = max(int(loan["total_installments"]) - paid, 0)
+            next_month = last_month + 1 if last_month is not None else None
+            if next_month is not None and next_month < _month_index(today.isoformat()):
+                next_month = _month_index(today.isoformat())
+            result.append({
+                **loan,
+                "paid": paid,
+                "total_paid": sum(months.values(), Decimal(0)),
+                "monthly": monthly,
+                "remaining": remaining,
+                "remaining_estimate": monthly * remaining if monthly is not None and remaining is not None else None,
+                "last_payment_month": _month_name(last_month) if last_month is not None else None,
+                "next_payment_month": _month_name(next_month) if next_month is not None and remaining != 0 else None,
+                "end_month": _month_name(last_month + remaining) if last_month is not None and remaining else None,
+            })
+        return result
+
+    def update_loan(self, loan_id: int, name: str | None = None, total_installments: int | None = None,
+                    monthly_payment: Decimal | None = None) -> bool:
+        cur = self._write(
+            "UPDATE loans SET name = COALESCE(?, name), total_installments = ?, monthly_payment = ? WHERE id = ?",
+            (name, total_installments or None, _str(monthly_payment) if monthly_payment else None, loan_id))
+        return cur.rowcount > 0
+
+    def update_loan_info(self, bank: str, as_of: str, remaining_debt: Decimal | None,
+                         remaining_installments: int | None, monthly: Decimal | None) -> None:
+        """Bankanın kredi borç bilgisi maili: kalan borç / kalan taksit."""
+        try:
+            if not self._one("SELECT id FROM loans WHERE bank = ?", (bank,)):
+                self._execute("INSERT INTO loans (bank, name, created_at) VALUES (?, ?, ?)",
+                              (bank, f"{bank} kredisi", _now()))
+            self._execute(
+                """UPDATE loans SET remaining_debt = COALESCE(?, remaining_debt),
+                       remaining_installments = COALESCE(?, remaining_installments),
+                       monthly_payment = COALESCE(monthly_payment, ?), info_as_of = ?
+                   WHERE bank = ? AND (info_as_of IS NULL OR info_as_of <= ?)""",
+                (_str(remaining_debt), remaining_installments, _str(monthly), as_of, bank, as_of))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    # --- düzenli ödemeler ---
+    def recurring(self, today: date | None = None, window: int = 6) -> list[dict]:
+        """Son `window` ayın en az 3'ünde, benzer tutarla (±%15) tekrarlanan harcamalar
+        (abonelik, fatura, kira ...). Krediler ayrı listelendiği için dahil değil."""
+        import re
+        import statistics
+
+        today = today or date.today()
+        start = _month_index(today.isoformat()) - window + 1
+        groups: dict[tuple[str, str], list[dict]] = {}
+        for row in self._report_rows():
+            if not self._is_spending(row["category"]) or row["category"] == "Kredi Ödemesi":
+                continue
+            amount = Decimal(row["amount"])
+            if amount <= 0 or _month_index(row["date"]) < start:
+                continue
+            key = re.sub(r"\s+", " ", re.sub(r"[\d*/.:#-]+", " ", row["description"].lower())).strip()
+            groups.setdefault((row["bank"], key), []).append({**row, "amount": amount})
+        result = []
+        for rows in groups.values():
+            months = {_month_index(r["date"]) for r in rows}
+            if len(months) < 3 or len(rows) > len(months) * 1.5:
+                continue
+            amounts = [float(r["amount"]) for r in rows]
+            mean = statistics.fmean(amounts)
+            if statistics.pstdev(amounts) > mean * 0.15:
+                continue
+            rows.sort(key=lambda r: r["date"])
+            last = rows[-1]
+            recent = rows[-3:]
+            result.append({
+                "description": last["description"], "category": last["category"], "bank": last["bank"],
+                "average": (sum((r["amount"] for r in recent), Decimal(0)) / len(recent)).quantize(Decimal("0.01")),
+                "months": len(months), "last_date": last["date"],
+                "next_month": _month_name(_month_index(last["date"]) + 1),
+            })
+        return sorted(result, key=lambda r: -r["average"])
+
+    # --- haftalık özet ---
+    def period_summary(self, start: date, end: date) -> dict:
+        """[start, end] aralığındaki net harcama, kategori ve yer kırılımı."""
+        cats: dict[str, Decimal] = {}
+        places: dict[str, Decimal] = {}
+        for row in self._report_rows():
+            if not (start.isoformat() <= row["date"][:10] <= end.isoformat()):
+                continue
+            if not self._is_spending(row["category"]):
+                continue
+            amount = Decimal(row["amount"])
+            cat = row["category"] or "Diğer"
+            cats[cat] = cats.get(cat, Decimal(0)) + amount
+            places[row["description"]] = places.get(row["description"], Decimal(0)) + amount
+        return {
+            "total": sum((v for v in cats.values() if v > 0), Decimal(0)),
+            "categories": sorted(((c, v) for c, v in cats.items() if v > 0), key=lambda x: -x[1]),
+            "places": sorted(((p, v) for p, v in places.items() if v > 0), key=lambda x: -x[1])[:5],
+        }
+
+
+def _month_index(iso: str) -> int:
+    return int(iso[:4]) * 12 + int(iso[5:7]) - 1
+
+
+def _month_name(index: int) -> str:
+    return f"{index // 12:04d}-{index % 12 + 1:02d}"

@@ -18,7 +18,7 @@ PG_URL = os.environ.get("TEST_DATABASE_URL")
 def _reset_pg(url):
     import psycopg
     with psycopg.connect(url, autocommit=True) as conn:
-        conn.execute("DROP TABLE IF EXISTS transactions, statements, processed_mails, meta, mail_log, balance_snapshots, accounts CASCADE")
+        conn.execute("DROP TABLE IF EXISTS transactions, statements, processed_mails, meta, mail_log, balance_snapshots, accounts, budgets, category_rules, loans CASCADE")
     from bankatakip import storage as storage_mod
     storage_mod._SCHEMA_READY.discard(url)
 
@@ -130,3 +130,30 @@ def test_report(storage):
     assert trend == [{"month": "2026-06", "total": Decimal("300")}, {"month": "2026-07", "total": Decimal("100")},
                      {"month": "2026-08", "total": Decimal("100")}]
     assert storage.category_trend("Diğer", "2026-08", count=1) == [{"month": "2026-08", "total": Decimal("90")}]
+
+
+def test_planning_tables(storage):
+    from datetime import datetime
+
+    from bankatakip.parsers.notifications import installments
+
+    storage.save_statement(_spend_statement(8, [(22, "KREDI TAHS", "5000", "Kredi Ödemesi"),
+                                                (3, "NETFLIX", "229.99", "Abonelik")]), "p8", source="gmail")
+    storage.add_notification("Akbank", "icloud", Transaction(date(2026, 8, 5), "TEKNOLOJI", Decimal("900"), "Elektronik"))
+    storage.log_mail("icloud", "<m>", "bildirim_eklendi", bank="Akbank", received_at=datetime(2026, 8, 5),
+                     detail="TEKNOLOJI: 900 TL · 3 ay vadeli")
+    assert storage.backfill_installments(installments) == 1
+    assert storage.installment_plan(date(2026, 9, 24))["this_month"] == Decimal("300")
+
+    [loan] = storage.loans_overview(date(2026, 9, 24))
+    assert storage.update_loan(loan["id"], "Konut", 10, None)
+    storage.update_loan_info("Banka A", "2026-08-01", Decimal("40000"), 8, None)
+    [loan] = storage.loans_overview(date(2026, 9, 24))
+    assert loan["name"] == "Konut" and loan["remaining"] == 7
+
+    storage.set_budget("Abonelik", Decimal("100"))
+    assert storage.budget_status("2026-08")[0]["spent"] == Decimal("229.99")
+    storage.add_rule("netf", "Eğlence")
+    storage.add_rule("netf", "Abonelik")          # aynı ifade güncellenir
+    assert storage.rule_pairs() == [("netf", "Abonelik")]
+    assert storage.recategorize(lambda d, old: "X" if d == "NETFLIX" else old) == 1

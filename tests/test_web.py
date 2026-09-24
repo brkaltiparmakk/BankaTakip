@@ -175,3 +175,28 @@ def test_report_endpoints(client, monkeypatch):
     csv_resp = client.get(f"/api/export.csv?month={r['month']}")
     assert csv_resp.status_code == 200 and "text/csv" in csv_resp.headers["content-type"]
     assert csv_resp.content.startswith("﻿".encode()) and "Tarih;" in csv_resp.text
+
+
+def test_plan_budget_rule_endpoints(client, monkeypatch):
+    monkeypatch.setenv("AUTH_DISABLED", "1")
+    files = {"file": ("ekstre.pdf", make_pdf(SAMPLE_LINES), "application/pdf")}
+    assert client.post("/api/import", data={"bank": "Garanti BBVA"}, files=files, headers=H).status_code == 200
+
+    plan = client.get("/api/plan").json()
+    assert set(plan) == {"installments", "loans", "recurring"}
+
+    assert client.put("/api/budgets", json={"category": "Market", "amount": 100}).status_code == 403
+    assert client.put("/api/budgets", json={"category": "Market", "amount": 100}, headers=H).status_code == 200
+    budgets = client.get("/api/report").json()["budgets"]
+    assert budgets[0]["category"] == "Market" and budgets[0]["amount"] == 100
+
+    r = client.post("/api/rules", json={"pattern": "netf", "category": "Eğlence"}, headers=H)
+    assert r.status_code == 200 and r.json()["updated"] >= 1
+    assert client.post("/api/rules", json={"pattern": "ab", "category": "X"}, headers=H).status_code == 400
+    [rule] = client.get("/api/rules").json()
+    assert client.delete(f"/api/rules/{rule['id']}", headers=H).status_code == 200
+    assert client.get("/api/rules").json() == []
+
+    assert client.patch("/api/loans/999", json={"total_installments": 12}, headers=H).status_code == 404
+    assert client.get("/api/diagnostics/mail").json() == []
+    assert client.post("/api/diagnostics/test-mail", headers=H).status_code == 502

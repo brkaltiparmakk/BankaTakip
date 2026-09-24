@@ -96,6 +96,52 @@ def remaining_limit(text: str) -> Decimal | None:
     return _parse_any_amount(text[m.start(1): m.end(0)]) if m else None
 
 
+INSTALLMENTS_RE = re.compile(r"\b(\d{1,2})\s*(?:ay\s+vadeli|taksitli|taksit\s+ile)\b")
+# "Kredi kartı güncel dönem borcunuz 12.345,67 TL'dir"
+CARD_DEBT_RE = re.compile(r"(?:guncel\s+)?donem\s+borcu\w*[^0-9]{0,30}?(?=[-+]?\d)")
+# Kredi borç bilgisi: "kalan anapara/borç ... TL", "kalan taksit sayısı: 14", "taksit tutarı ... TL"
+LOAN_DEBT_RE = re.compile(r"kalan\s+(?:toplam\s+)?(?:kredi\s+)?(?:borc|anapara)\w*[^0-9]{0,30}?(?=\d)")
+LOAN_LEFT_RE = re.compile(r"kalan\s+taksit\s*(?:sayisi)?\w*[^0-9]{0,20}?(\d{1,3})\b")
+LOAN_MONTHLY_RE = re.compile(r"(?:aylik\s+)?taksit\s+tutari\w*[^0-9]{0,30}?(?=\d)")
+
+# Tutarsız ama işe yarar bilgi içeren mailler: (konuda aranacak ifade, tür)
+INFO_RULES = [
+    ("donem borcunuz", "kart_borcu"),
+    ("kredi borc bilgi", "kredi"),
+]
+
+
+def info_kind(subject: str) -> str | None:
+    folded = tr_fold(subject)
+    return next((kind for phrase, kind in INFO_RULES if phrase in folded), None)
+
+
+def installments(text: str) -> int | None:
+    """"9 ay vadeli", "6 taksitli" → 9, 6 (tek çekim/peşin → None)."""
+    m = INSTALLMENTS_RE.search(tr_fold(text))
+    n = int(m.group(1)) if m else 0
+    return n if 1 < n <= 48 else None
+
+
+def _amount_after(text: str, pattern: re.Pattern) -> Decimal | None:
+    m = pattern.search(tr_fold(text))
+    return _parse_any_amount(text[m.end(): m.end() + 30]) if m else None
+
+
+def card_debt(text: str) -> Decimal | None:
+    return _amount_after(text, CARD_DEBT_RE)
+
+
+def loan_info(text: str) -> dict:
+    """Kredi borç bilgisi mailinden bulunabilenler (bulunamayan alanlar None)."""
+    m = LOAN_LEFT_RE.search(tr_fold(text))
+    return {
+        "remaining_debt": _amount_after(text, LOAN_DEBT_RE),
+        "remaining_installments": int(m.group(1)) if m else None,
+        "monthly": _amount_after(text, LOAN_MONTHLY_RE),
+    }
+
+
 def account_balance(text: str) -> Decimal | None:
     """"... hesabınızın güncel bakiyesi 12.345,67 TL" → 12345.67"""
     m = BALANCE_RE.search(tr_fold(text))
@@ -188,6 +234,8 @@ def parse_notification(text: str, subject: str, received: datetime | None,
         description = sector or _merchant(text) or _generic_description(text)
     tx = Transaction(date=tx_date, description=description or subject.strip(), amount=amount * sign,
                      sector=sector, account=notification_account(text, subject, bank) if bank else None)
+    if not movement and sign > 0:
+        tx.installments = installments(text)
     # İşyeri/sektör bulunamadıysa sonuç zayıftır: yapay zeka açıksa ona sorulur
     tx.weak = description is None
     return tx

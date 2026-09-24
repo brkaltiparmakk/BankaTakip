@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .parsers.generic import GenericParser, tr_fold
+from .parsers.generic import GenericParser, _keyword_pattern, tr_fold
 
 OTHER = "Diğer"
 
@@ -27,6 +27,17 @@ def pretty_name(text: str) -> str:
     return " / ".join(p for p in parts if p)[:40]
 
 
+def compile_rules(rules) -> list[tuple]:
+    """Panelden eklenen kurallar [(ifade, kategori)] → derlenmiş desenler. Anahtar kelime
+    kurallarından önce uygulanır."""
+    return [(_keyword_pattern(p), c) for p, c in rules if p and p.strip() and c]
+
+
+def match_rules(compiled: list[tuple], description: str) -> str | None:
+    folded = tr_fold(description)
+    return next((c for pattern, c in compiled if pattern.search(folded)), None)
+
+
 class CategoryResolver:
     """Önce anahtar kelime kuralları, sonra sektör/öneri; hiçbiri yoksa kategorisiz ("Diğer").
 
@@ -34,12 +45,15 @@ class CategoryResolver:
     farklı yazımlarla ("Benzin Istasyonu" / "BENZİN İSTASYONU") iki kez açılmasını önler.
     """
 
-    def __init__(self, parser: GenericParser, known: list[str]):
+    def __init__(self, parser: GenericParser, known: list[str], rules=()):
         self.parser = parser
         self.known = {tr_fold(name): name for name in known if name}
+        self.rules = compile_rules(rules)
+        for _, category in self.rules:
+            self.known.setdefault(tr_fold(category), category)
 
     def resolve(self, description: str, hint: str | None = None) -> str | None:
-        category = self.parser.categorize(description)
+        category = match_rules(self.rules, description) or self.parser.categorize(description)
         if category is None and hint:
             category = self.parser.categorize(hint)
         if category is not None or not hint:
@@ -55,7 +69,7 @@ class CategoryResolver:
         tx.category = self.resolve(tx.description, tx.sector)
 
 
-def recategorizer(parser: GenericParser, categories: dict[str, list[str]]):
+def recategorizer(parser: GenericParser, categories: dict[str, list[str]], rules=()):
     """Kurallar değiştiğinde eski kayıtlar için karar fonksiyonu (Storage.recategorize ile).
 
     - Anahtar kelimeye uyan işlem o kategoriye geçer.
@@ -66,9 +80,10 @@ def recategorizer(parser: GenericParser, categories: dict[str, list[str]]):
       adlandırılır ("EGLENCE" → "Eğlence" kategorisi).
     """
     resolver = CategoryResolver(parser, list(categories))
+    compiled = compile_rules(rules)
 
     def decide(description: str, old: str | None) -> str | None:
-        new = parser.categorize(description)
+        new = match_rules(compiled, description) or parser.categorize(description)
         if new is not None or old is None:
             return new
         if old in categories:
