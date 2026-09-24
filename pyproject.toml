@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bankatakip"
+version = "0.1.0"
+description = "Maildeki banka ekstrelerini okuyup harcamaları takip eder."
+requires-python = ">=3.11"
+dependencies = [
+    "pdfplumber>=0.11",
+    "pypdf>=4.0",
+    "cryptography>=42",
+    "PyYAML>=6.0",
+    "python-dotenv>=1.0",
+    "fastapi>=0.110",
+    "httpx>=0.27",
+    "python-multipart>=0.0.9",
+    "psycopg[binary]>=3.1",
+]
+
+[project.scripts]
+bankatakip = "bankatakip.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bankatakip*"]
+
+[tool.setuptools.package-data]
+bankatakip = ["defaults.yaml", "web/static/*.html"]
