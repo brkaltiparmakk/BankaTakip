@@ -116,6 +116,7 @@ def test_cron_requires_secret(client, monkeypatch):
     r = client.get("/api/cron/sync", headers={"Authorization": "Bearer s3cret"})
     assert r.status_code == 200
     assert r.json()["errors"] == ["Tanımlı mail hesabı yok (GMAIL_EMAIL / ICLOUD_EMAIL)."]
+    assert r.json()["reminders_sent"] == []
 
 
 def test_auth_info(client, monkeypatch):

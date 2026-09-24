@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from ..config import Config, ConfigError, load_config
 from ..parsers import PdfPasswordError
 from ..storage import Storage, is_postgres_url
+from ..reminders import send_due_reminders
 from ..sync import import_pdf, sync
 from . import auth
 
@@ -222,7 +223,9 @@ def run_sync(user: str = User, config: Config = Depends(get_config),
 def cron_sync(request: Request, config: Config = Depends(get_config),
               storage: Storage = Depends(get_storage)):
     auth.check_cron(request)
-    return sync(config, storage, time_budget=_time_budget()).as_dict()
+    report = sync(config, storage, time_budget=_time_budget()).as_dict()
+    report["reminders_sent"] = send_due_reminders(config, storage)
+    return report
 
 
 @app.post("/api/import", dependencies=[SameOrigin])

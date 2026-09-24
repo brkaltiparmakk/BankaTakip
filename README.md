@@ -64,6 +64,9 @@ Değişkenleri ekledikten sonra **Deployments → Redeploy** yapın.
 - Panele girip **Tarama → Şimdi tara**'ya basın. İlk taramada bir yıllık mail varsa süre sınırı
   nedeniyle birkaç kez basmanız gerekebilir; her seferinde kaldığı yerden devam eder.
 - Sonrasında `vercel.json`'daki cron her gün 09:00'da (TR) yeni ekstreleri kendisi çeker.
+- Son ödeme tarihine 3 gün kala Gmail (veya iCloud) hesabınızdan kendinize hatırlatma maili
+  gider. `REMINDER_DAYS` ile gün sayısını değiştirebilir (0 = kapalı), `REMINDER_EMAIL` ile
+  başka bir adrese yönlendirebilirsiniz.
 - Banka listesini veya kategorileri değiştirmek için `BANKATAKIP_CONFIG` değişkenine
   `config.example.yaml` biçiminde YAML yazabilirsiniz; yoksa varsayılanlar kullanılır.
 
