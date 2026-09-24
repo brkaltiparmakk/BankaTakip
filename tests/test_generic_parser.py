@@ -83,3 +83,13 @@ def test_categorize_word_start():
     assert p.categorize("BP ISTANBUL") == "Ulaşım"
     assert p.categorize("BPX") is None
     assert p.categorize("SHELLTR MASLAK") == "Ulaşım"
+
+
+def test_mail_password_cleanup(monkeypatch):
+    from bankatakip.config import MailAccount
+    gmail = MailAccount("gmail", "gmail", "a@gmail.com", "T_GMAIL_PW", "imap.gmail.com")
+    icloud = MailAccount("icloud", "icloud", "a@icloud.com", "T_ICLOUD_PW", "imap.mail.me.com")
+    monkeypatch.setenv("T_GMAIL_PW", " abcd efgh ijkl mnop \n")
+    monkeypatch.setenv("T_ICLOUD_PW", " abcd-efgh-ijkl-mnop ")
+    assert gmail.password == "abcdefghijklmnop"
+    assert icloud.password == "abcd-efgh-ijkl-mnop"

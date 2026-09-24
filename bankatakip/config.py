@@ -29,7 +29,10 @@ class MailAccount:
 
     @property
     def password(self) -> str:
-        value = os.environ.get(self.password_env)
+        value = (os.environ.get(self.password_env) or "").strip()
+        if self.provider == "gmail":
+            # Google uygulama şifresini "abcd efgh ijkl mnop" diye gösterir; boşluklar şifreye dahil değil
+            value = value.replace(" ", "")
         if not value:
             raise ConfigError(
                 f"'{self.name}' hesabı için {self.password_env} tanımlı değil "
