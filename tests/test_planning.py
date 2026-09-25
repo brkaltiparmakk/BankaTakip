@@ -225,3 +225,60 @@ def test_salary_api(tmp_path, config, monkeypatch):
         assert report["kpi"]["income"] == 80000
     finally:
         web_app.app.dependency_overrides.clear()
+
+
+ENPARA_BODY = ("Sayın Burak Altıparmak, Enpara.com Kredi Kartınızın 20/08/2026 tarihli ekstresini ekte bulabilirsiniz. "
+               "Özet borç bilgileriniz ise aşağıdaki gibidir: | Ekstre borcu | 142,91 TL | | Minimum ödeme tutarı | "
+               "29,00 TL | | Son ödeme tarihi | 31/08/2026 |")
+
+
+def test_card_statement_mail_hints():
+    from bankatakip.parsers.generic import GenericParser, apply_mail_hints
+
+    parser = GenericParser("Enpara", {"Ödeme": ["ödeme"]})
+    # PDF metni bozuk: kart işaretleri okunamıyor, "bakiye" geçtiği için hesap dökümü sanılıyor
+    text = ("Kart No: **** **** **** 4321\nÖnceki dönem bakiye 0,00\n"
+            "02.08.2026 KAHVEDE ART 110,00\n05.08.2026 Ödeme - Enpara.com Cep Şubesi 2.400,00\n"
+            "06.08.2026 gün sonu bakiyesi 1.033,00\n")
+    st = parser.parse(text)
+    assert st.kind == "vadesiz" and len(st.transactions) == 2      # bakiye satırı işlem sayılmaz
+    apply_mail_hints(st, parser, text, "20.08.2026 tarihli Enpara.com Kredi Kartı ekstreniz", ENPARA_BODY)
+    assert st.kind == "kredi_karti" and st.account.key == "kart:4321"
+    s = st.summary
+    assert (s.period_debt, s.minimum_payment, s.due_date, s.statement_date) == (
+        Decimal("142.91"), Decimal("29.00"), date(2026, 8, 31), date(2026, 8, 20))
+    amounts = {t.description: t.amount for t in st.transactions}
+    assert amounts == {"KAHVEDE ART": Decimal("110.00"), "Ödeme - Enpara.com Cep Şubesi": Decimal("-2400.00")}
+
+    # hesap özeti maili (kart değil) değişmez
+    other = parser.parse(text)
+    apply_mail_hints(other, parser, text, "2024 Aralık ayı hesap özetiniz", "")
+    assert other.kind == "vadesiz"
+
+
+def test_requeue_misread_card_statements_and_uncategorized(tmp_path):
+    from bankatakip.storage import rule_pattern
+
+    storage = Storage(tmp_path / "q.db")
+    received = datetime(2026, 8, 21, 10, 9)
+    st = ParsedStatement(bank="Enpara", summary=StatementSummary(), kind="vadesiz", transactions=[
+        Transaction(date(2026, 8, 2), "KAHVEDE ART", Decimal("110"), None),
+        Transaction(date(2026, 8, 3), "KAHVEDE ART İZMİT", Decimal("60"), None),
+        Transaction(date(2026, 8, 4), "SBX İZMİT ŞEKERPINAR DRI", Decimal("90"), None)])
+    storage.save_statement(st, "h1", source="gmail", received_at=received)
+    storage.mark_mail_processed("gmail", "<e>")
+    storage.log_mail("gmail", "<e>", "eklendi", bank="Enpara", received_at=received,
+                     subject="20.08.2026 tarihli Enpara.com Kredi Kartı ekstreniz")
+    storage.add_notification("Akbank", "icloud", Transaction(date(2026, 8, 5), "Banka kartı harcaması", Decimal("50")))
+
+    groups = storage.uncategorized_groups()
+    assert [(g["pattern"], g["count"], g["total"]) for g in groups] == [
+        ("KAHVEDE ART", 2, Decimal("170")), ("SBX İZMİT ŞEKERPINAR", 1, Decimal("90"))]
+    assert storage.uncategorized_count() == {"total": 4, "generic": 1}
+    assert rule_pattern("FAST8994-BURAK ALTIPARMAK- Para Transferi") == "ALTIPARMAK"
+
+    wanted = lambda subject: "Kredi Kartı" in subject
+    assert storage.requeue_statement_mails(wanted) == 1
+    assert not storage.is_mail_processed("gmail", "<e>") and storage.list_statements() != []  # sadece Akbank kaldı
+    assert all(t["bank"] == "Akbank" for t in storage.list_transactions())
+    assert storage.requeue_statement_mails(wanted) == 0

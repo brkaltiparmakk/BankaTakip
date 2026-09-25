@@ -191,6 +191,27 @@ class GeminiClient:
                 raise AIError(f"Gemini yanıtı okunamadı: {exc}") from exc
         raise AIError(f"Kullanılabilir Gemini modeli bulunamadı ({last_error}).")
 
+    def suggest_categories(self, descriptions: list[str], categories: list[str]) -> list[str | None]:
+        """Banka işlem açıklamalarına kategori önerir (aynı sırada; bilinmiyorsa None)."""
+        schema = {"type": "object", "properties": {"items": {"type": "array", "items": {
+            "type": "object", "properties": {"index": {"type": "integer"}, "category": {"type": "string"}},
+            "required": ["index", "category"]}}}, "required": ["items"]}
+        results: list[str | None] = [None] * len(descriptions)
+        for start in range(0, len(descriptions), 40):
+            chunk = descriptions[start:start + 40]
+            text = (
+                "Aşağıdakiler Türk bankalarının kart/hesap ekstrelerindeki işlem açıklamaları (işyeri adı, "
+                "çoğu zaman kısaltılmış ve şube/şehir eki var). Her biri için işyerinin sektörüne göre en "
+                "uygun harcama kategorisini seç. Önce bu listeden seç: " + ", ".join(categories) + ". "
+                "Hiçbiri uymuyorsa 1-3 kelimelik Türkçe yeni bir kategori adı yaz. İşyeri tanınmıyorsa "
+                "'Diğer' yaz.\n\n" + "\n".join(f"[{i}] {d}" for i, d in enumerate(chunk)))
+            data = self._generate([{"text": text}], schema)
+            for item in data.get("items", []):
+                i, cat = item.get("index"), (item.get("category") or "").strip()
+                if isinstance(i, int) and 0 <= i < len(chunk) and cat and cat != "Diğer":
+                    results[start + i] = cat[:40]
+        return results
+
     def extract_notifications(self, items: list[tuple[str, str, datetime | None]],
                               categories: list[str] | None = None) -> list[Transaction | None]:
         """items: (konu, gövde metni, alınma zamanı). Aynı sırada işlem veya None döner."""

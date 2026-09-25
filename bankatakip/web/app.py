@@ -505,3 +505,25 @@ def set_salary(body: SalaryInput, user: str = User, storage: Storage = Depends(g
     if body.amount is not None and body.amount < 0:
         raise HTTPException(400, "Maaş tutarı negatif olamaz.")
     return {"ok": True, "updated": storage.set_salary(body.from_month, body.amount)}
+
+
+# --- kategorisiz işlemler ---
+@app.get("/api/uncategorized")
+def uncategorized(user: str = User, storage: Storage = Depends(get_storage)):
+    return _jsonable({"groups": storage.uncategorized_groups(), **storage.uncategorized_count(),
+                      "ai": ai_enabled()})
+
+
+@app.post("/api/uncategorized/ai", dependencies=[SameOrigin])
+def uncategorized_ai(user: str = User, config: Config = Depends(get_config),
+                     storage: Storage = Depends(get_storage)):
+    if not ai_enabled():
+        raise HTTPException(503, "GEMINI_API_KEY tanımlı değil.")
+    groups = storage.uncategorized_groups()
+    categories = [c for c in dict.fromkeys(list(config.categories) + storage.used_categories())
+                  if c not in ("Transfer", "Kart Ödemesi", "Ödeme", "Maaş")]
+    try:
+        suggestions = GeminiClient().suggest_categories([g["example"] for g in groups], categories)
+    except AIError as exc:
+        raise HTTPException(502, str(exc))
+    return {"suggestions": {g["pattern"]: s for g, s in zip(groups, suggestions) if s}}

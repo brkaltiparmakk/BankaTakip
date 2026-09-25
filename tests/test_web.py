@@ -200,3 +200,13 @@ def test_plan_budget_rule_endpoints(client, monkeypatch):
     assert client.patch("/api/loans/999", json={"total_installments": 12}, headers=H).status_code == 404
     assert client.get("/api/diagnostics/mail").json() == []
     assert client.post("/api/diagnostics/test-mail", headers=H).status_code == 502
+
+
+def test_uncategorized_endpoints(client, monkeypatch):
+    monkeypatch.setenv("AUTH_DISABLED", "1")
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    files = {"file": ("ekstre.pdf", make_pdf(SAMPLE_LINES), "application/pdf")}
+    assert client.post("/api/import", data={"bank": "Garanti BBVA"}, files=files, headers=H).status_code == 200
+    u = client.get("/api/uncategorized").json()
+    assert u["ai"] is False and u["total"] >= len(u["groups"]) >= 0
+    assert client.post("/api/uncategorized/ai", headers=H).status_code == 503

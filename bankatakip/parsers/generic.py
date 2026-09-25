@@ -96,6 +96,42 @@ SUMMARY_PATTERNS = {
 }
 
 
+# İşlem değil, bakiye satırı: "gün sonu bakiyesi", "devreden bakiye", "önceki dönem bakiyesi"
+BALANCE_LINES = ("gun sonu bakiye", "devreden bakiye", "devir bakiye", "onceki donem bakiye",
+                 "donem basi bakiye", "acilis bakiye")
+# Kart ekstresinde müşterinin yaptığı ödeme satırları (artı yazılsa da borcu azaltır)
+CARD_PAYMENT_RE = re.compile(r"^(?:odeme|odemeniz|borc odeme|kart odeme|payment)\b")
+
+
+def apply_mail_hints(statement: ParsedStatement, parser: "GenericParser", document_text: str,
+                     subject: str, body: str) -> None:
+    """Ekin yanındaki mail konusu/gövdesiyle ekstreyi tamamlar: "Kredi Kartı ekstreniz" diyen
+    mail kart ekstresidir (PDF metni bozuk çıksa bile) ve gövdedeki özet (ekstre borcu, asgari
+    ödeme, son ödeme tarihi) eksik alanları doldurur."""
+    hint = f"{subject}\n{body}"
+    folded = tr_fold(hint)
+    if statement.kind == "vadesiz" and "kredi kart" in folded and "ekstre" in folded:
+        statement.kind = "kredi_karti"
+        if statement.flipped:  # hesap dökümü sanılıp çevrilen işaretleri geri al
+            for tx in statement.transactions:
+                tx.amount = -tx.amount
+            statement.flipped = False
+        statement.summary = parser.parse_summary(document_text)
+        statement.account = detect_account(document_text + "\n" + hint, "kredi_karti", parser.bank_name)
+    if statement.kind != "kredi_karti":
+        return
+    summary, from_body = statement.summary, parser.parse_summary(body)
+    for name in ("period_debt", "minimum_payment", "due_date", "available_limit", "statement_date"):
+        if getattr(summary, name) is None and getattr(from_body, name) is not None:
+            setattr(summary, name, getattr(from_body, name))
+    if summary.statement_date is None:  # "20.08.2026 tarihli ... ekstreniz"
+        m = DATE_RE.search(tr_fold(subject))
+        summary.statement_date = parse_date(subject[m.start(): m.end()]) if m else None
+    for tx in statement.transactions:
+        if tx.amount > 0 and CARD_PAYMENT_RE.match(tr_fold(tx.description)):
+            tx.amount = -tx.amount
+
+
 def infer_account_flip(transactions: list[Transaction]) -> bool | None:
     """Bakiye sütunu varsa tutarların işaret yönünü bakiyeden doğrular.
 
@@ -173,6 +209,7 @@ class GenericParser:
             statement.summary = StatementSummary(statement_date=statement.summary.statement_date)
         if flip:
             # Vadesiz hesapta çıkan para eksi yazılır; uygulamada harcama artı olduğu için çevir
+            statement.flipped = True
             for tx in statement.transactions:
                 tx.amount = -tx.amount
         for tx in statement.transactions:
@@ -201,7 +238,9 @@ class GenericParser:
         if not amount_match:
             return None
         description = rest[: amount_match.start()].strip(" -:|")
-        if not description or tr_fold(description).startswith(("son odeme", "hesap kesim")):
+        folded_desc = tr_fold(description)
+        if not description or folded_desc.startswith(("son odeme", "hesap kesim")) or \
+                any(k in folded_desc for k in BALANCE_LINES):
             return None
         amount = _amount_from_match(amount_match)
         if amount is None:

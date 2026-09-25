@@ -45,3 +45,4 @@ class ParsedStatement:
     account: AccountRef | None = None
     kind: str = "kredi_karti"  # "kredi_karti" ekstresi veya "vadesiz" hesap dökümü
     saved_transactions: int | None = None  # kaydedilirken tekrar olmayan işlem sayısı
+    flipped: bool = False  # hesap dökümü sanılıp tutar işaretleri çevrildi mi

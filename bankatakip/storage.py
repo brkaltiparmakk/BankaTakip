@@ -462,6 +462,11 @@ class Storage:
     def add_snapshot(self, account_id: int, as_of: str, balance: Decimal | None = None,
                      available_limit: Decimal | None = None, source: str = "manuel",
                      commit: bool = False) -> None:
+        # Aynı mail yeniden okunursa aynı bilgi ikinci kez yazılmasın
+        if self._one("""SELECT 1 FROM balance_snapshots WHERE account_id = ? AND as_of = ?
+                         AND COALESCE(balance, '') = ? AND COALESCE(available_limit, '') = ?""",
+                     (account_id, as_of, _str(balance) or "", _str(available_limit) or "")):
+            return
         self._execute(
             """INSERT INTO balance_snapshots (account_id, as_of, balance, available_limit, source, created_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
@@ -544,6 +549,45 @@ class Storage:
             self.conn.rollback()
             raise
         return cur.rowcount > 0
+
+    def requeue_statement_mails(self, wanted) -> int:
+        """Yanlış türde (vadesiz sanılmış) kaydedilen ekstrelerin maillerini yeniden taranacak hale
+        getirir: wanted(konu) doğru olan mailin ekstresi ve günlük kaydı silinir. Sayı döndürür."""
+        rows = self._all("SELECT account, message_id, bank, subject, received_at, status FROM mail_log "
+                         "WHERE status IN ('eklendi', 'zaten_var', 'hata')")
+        count = 0
+        try:
+            for r in rows:
+                if not wanted(r["subject"] or ""):
+                    continue
+                stmts = self._all("SELECT id FROM statements WHERE bank = ? AND received_at = ? AND kind = 'vadesiz'",
+                                  (r["bank"], r["received_at"]))
+                if not stmts and r["status"] != "hata":
+                    continue
+                for st in stmts:
+                    self._execute("DELETE FROM transactions WHERE statement_id = ?", (st["id"],))
+                    self._execute("DELETE FROM statements WHERE id = ?", (st["id"],))
+                self._execute("DELETE FROM processed_mails WHERE account = ? AND message_id = ?",
+                              (r["account"], r["message_id"]))
+                self._execute("DELETE FROM mail_log WHERE account = ? AND message_id = ?",
+                              (r["account"], r["message_id"]))
+                count += 1
+            # İşlemi kalmayan otomatik hesaplar (yanlış açılmış "Vadesiz") ve anlık görüntüleri
+            self._execute(
+                """DELETE FROM balance_snapshots WHERE source <> 'manuel' AND account_id IN (
+                       SELECT a.id FROM accounts a WHERE NOT EXISTS (SELECT 1 FROM transactions t WHERE t.account_id = a.id)
+                       AND NOT EXISTS (SELECT 1 FROM statements s WHERE s.account_id = a.id))""")
+            self._execute(
+                """DELETE FROM accounts WHERE NOT EXISTS (SELECT 1 FROM transactions t WHERE t.account_id = accounts.id)
+                   AND NOT EXISTS (SELECT 1 FROM statements s WHERE s.account_id = accounts.id)
+                   AND NOT EXISTS (SELECT 1 FROM balance_snapshots b WHERE b.account_id = accounts.id)""")
+            if count:
+                self._execute("DELETE FROM meta WHERE key LIKE ?", ("last_sync:%",))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return count
 
     # --- sorgular ---
     def list_statements(self) -> list[dict]:
@@ -771,6 +815,52 @@ class Storage:
             used = max(spent.get(b["category"], Decimal(0)), Decimal(0))
             result.append({**b, "spent": used, "ratio": used / b["amount"] if b["amount"] else Decimal(0)})
         return sorted(result, key=lambda b: -b["ratio"])
+
+    def uncategorized_groups(self, limit: int = 40) -> list[dict]:
+        """Kategorisiz işlemler, benzer açıklamalar bir arada (rakamlar ve şube kodları hariç):
+        panelde tek tıkla kural eklemek için. İşyeri yazmayan genel bildirimler dahil değil."""
+        import re
+
+        groups: dict[str, dict] = {}
+        for r in self._all("SELECT description, amount FROM transactions WHERE category IS NULL"):
+            desc = r["description"]
+            if desc in GENERIC_DESCRIPTIONS:
+                continue
+            pattern = rule_pattern(desc)
+            key = re.sub(r"\s+", " ", pattern.lower())
+            g = groups.setdefault(key, {"pattern": pattern, "example": desc, "count": 0, "total": Decimal(0)})
+            g["count"] += 1
+            g["total"] += Decimal(r["amount"])
+        # "KAHVEDE ART" kuralı "KAHVEDE ART İZMİT"i de kapsar: kısa ifadenin grubunda topla
+        merged: dict[str, dict] = {}
+        for key in sorted(groups, key=len):
+            root = next((k for k in merged if key.startswith(k)), None)
+            if root is None:
+                merged[key] = groups[key]
+            else:
+                merged[root]["count"] += groups[key]["count"]
+                merged[root]["total"] += groups[key]["total"]
+        return sorted(merged.values(), key=lambda g: (-g["count"], -abs(g["total"])))[:limit]
+
+    def delete_matching_transactions(self, match) -> int:
+        """match(açıklama) doğru olan (işlem olmayan, ör. "gün sonu bakiyesi") satırları siler."""
+        rows = self._all("SELECT id, description FROM transactions")
+        ids = [r["id"] for r in rows if match(r["description"])]
+        try:
+            for i in ids:
+                self._execute("DELETE FROM transactions WHERE id = ?", (i,))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        return len(ids)
+
+    def uncategorized_count(self) -> dict:
+        row = self._one("SELECT COUNT(*) AS n FROM transactions WHERE category IS NULL")
+        generic = self._one(
+            "SELECT COUNT(*) AS n FROM transactions WHERE category IS NULL AND description IN ("
+            + ", ".join("?" for _ in GENERIC_DESCRIPTIONS) + ")", tuple(GENERIC_DESCRIPTIONS))
+        return {"total": int(row["n"]), "generic": int(generic["n"])}
 
     # --- panelden eklenen kategori kuralları ---
     def list_rules(self) -> list[dict]:
@@ -1082,6 +1172,29 @@ class Storage:
             "categories": sorted(((c, v) for c, v in cats.items() if v > 0), key=lambda x: -x[1]),
             "places": sorted(((p, v) for p, v in places.items() if v > 0), key=lambda x: -x[1])[:5],
         }
+
+
+# İşyeri yazmayan bildirimlerin açıklamaları: kural bunlara uygulanamaz (hepsi aynı olurdu)
+GENERIC_DESCRIPTIONS = ("Banka kartı harcaması", "Kredi kartı harcaması", "Kredi kartı harcamanız",
+                        "Akbank Kart harcamanız", "Hesaba para girişi", "Hesaptan para çıkışı")
+
+
+def rule_pattern(description: str) -> str:
+    """Kural için önerilen ifade: açıklamanın rakam içermeyen ilk (en fazla 3) kelimesi,
+    sondaki şube/şehir ekleri olmadan. "SBX İZMİT ŞEKERPINAR DRI" → "SBX İZMİT ŞEKERPINAR"."""
+    import re
+
+    words = []
+    for w in description.split():
+        if re.search(r"\d", w) or len(words) == 3:
+            break
+        words.append(w)
+    text = re.sub(r"[^\w\s.&'-]+$", "", " ".join(words)).strip(" .-")
+    if len(text) >= 3:
+        return text
+    fallback = next((re.sub(r"[^\w]", "", w) for w in description.split()
+                     if len(re.sub(r"[^\w]", "", w)) >= 3 and not re.search(r"\d", w)), "")
+    return fallback or description[:20]
 
 
 def _month_index(iso: str) -> int:

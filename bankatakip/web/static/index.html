@@ -131,6 +131,9 @@ dd { margin: 0; overflow-wrap: anywhere; }
   .bar-row > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
   .bar-val { display: flex; gap: 8px; align-items: baseline; }
   .brow { grid-template-columns: 1fr auto auto; gap: 2px 10px; }
+  #uncat-body .uncat-pattern { min-width: 0 !important; }
+  #uncat-body .uncat-cat { max-width: 116px; }
+  #uncat-body td:first-child { width: 55%; }
   .brow > :nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
 }
 </style>
@@ -283,6 +286,21 @@ dd { margin: 0; overflow-wrap: anywhere; }
   </section>
 
   <section id="tab-transactions" hidden>
+    <div class="card" id="uncat-card" style="margin-bottom:14px" hidden>
+      <div class="row" style="justify-content:space-between;margin-bottom:6px">
+        <h2 style="margin:0" id="uncat-title">Kategorisiz işlemler</h2>
+        <div class="row">
+          <button class="btn ghost" id="uncat-ai" type="button">Yapay zekaya sor</button>
+          <button class="btn" id="uncat-save" type="button">Seçilenleri kaydet</button>
+        </div>
+      </div>
+      <p class="muted small" style="margin-top:0" id="uncat-note"></p>
+      <div class="table-wrap"><table>
+        <thead><tr><th>İşyeri (kural ifadesi)</th><th class="num hide-sm">İşlem</th><th class="num hide-sm">Tutar</th><th>Kategori</th></tr></thead>
+        <tbody id="uncat-body"></tbody>
+      </table></div>
+      <button class="btn link" type="button" id="uncat-more" style="color:var(--muted);margin-top:6px" hidden>Tümünü göster</button>
+    </div>
     <div class="card">
       <div class="filters">
         <input id="f-q" type="search" placeholder="Açıklamada ara">
@@ -885,8 +903,76 @@ $("statements-body").addEventListener("click", async (e) => {
   }
 });
 
+// ---- Kategorisiz işlemler: benzer açıklamalar gruplanır, seçilen kategori kural olarak kaydedilir ----
+let uncatAll = false;
+async function loadUncategorized() {
+  const u = await api("/api/uncategorized");
+  $("uncat-card").hidden = !u.groups.length;
+  if (!u.groups.length) return;
+  const rest = u.total - u.generic;
+  $("uncat-title").textContent = `Kategorisiz işlemler (${rest})`;
+  $("uncat-note").textContent = "Her satır benzer açıklamalı işlemlerin grubu. Kategori seçip kaydedince kural olur: " +
+    "bu işlemler ve bundan sonra gelenler o kategoriye girer." +
+    (u.generic ? ` Ayrıca ${u.generic} işlemde banka işyerini yazmamış ("Banka kartı harcaması" gibi); onları tek tek düzeltebilirsiniz.` : "");
+  $("uncat-ai").disabled = !u.ai;
+  $("uncat-ai").title = u.ai ? "Gemini her grup için kategori önerir; kaydetmeden önce kontrol edin" : "GEMINI_API_KEY eklenince çalışır";
+  const opts = `<option value="">— seçin —</option>` + me.categories.filter((c) => c !== "Diğer")
+    .map((c) => `<option>${esc(c)}</option>`).join("") + `<option value="__new">+ Yeni kategori…</option>`;
+  const shown = uncatAll ? u.groups : u.groups.slice(0, 12);
+  $("uncat-body").innerHTML = shown.map((g, i) => `<tr data-uncat="${i}">
+      <td><input class="uncat-pattern" value="${esc(g.pattern)}" aria-label="Kural ifadesi" style="width:100%;min-width:140px">
+        ${g.example !== g.pattern ? `<div class="muted small">${esc(g.example)}</div>` : ""}
+        <div class="muted small show-sm">${g.count} işlem · ${money(g.total)}</div></td>
+      <td class="num hide-sm">${g.count}</td><td class="num hide-sm">${money(g.total)}</td>
+      <td><select class="inline uncat-cat" aria-label="Kategori">${opts}</select></td></tr>`).join("");
+  $("uncat-more").hidden = uncatAll || u.groups.length <= 12;
+}
+$("uncat-more").addEventListener("click", () => { uncatAll = true; loadUncategorized(); });
+$("uncat-body").addEventListener("change", (e) => {
+  const sel = e.target.closest(".uncat-cat");
+  if (!sel || sel.value !== "__new") return;
+  const name = (prompt("Yeni kategori adı:") || "").trim();
+  if (!name) { sel.value = ""; return; }
+  if (!me.categories.includes(name)) me.categories.push(name);
+  document.querySelectorAll(".uncat-cat").forEach((s) => s.insertAdjacentHTML("beforeend", `<option>${esc(name)}</option>`));
+  sel.value = name;
+});
+$("uncat-ai").addEventListener("click", async () => {
+  const btn = $("uncat-ai");
+  btn.disabled = true; btn.textContent = "Soruluyor…";
+  try {
+    const { suggestions } = await api("/api/uncategorized/ai", { method: "POST" });
+    let n = 0;
+    document.querySelectorAll("#uncat-body tr").forEach((tr) => {
+      const cat = suggestions[tr.querySelector(".uncat-pattern").defaultValue];
+      const sel = tr.querySelector(".uncat-cat");
+      if (!cat || sel.value) return;
+      if (![...sel.options].some((o) => o.value === cat)) sel.insertAdjacentHTML("beforeend", `<option>${esc(cat)}</option>`);
+      sel.value = cat; n++;
+    });
+    flash(`Yapay zeka ${n} grup için kategori önerdi. Kontrol edip "Seçilenleri kaydet"e basın.`);
+  } catch (err) { flash(err.message, true); }
+  finally { btn.disabled = false; btn.textContent = "Yapay zekaya sor"; }
+});
+$("uncat-save").addEventListener("click", async () => {
+  const picks = [...document.querySelectorAll("#uncat-body tr")]
+    .map((tr) => ({ pattern: tr.querySelector(".uncat-pattern").value.trim(), category: tr.querySelector(".uncat-cat").value }))
+    .filter((p) => p.pattern && p.category && p.category !== "__new");
+  if (!picks.length) return flash("Önce en az bir satır için kategori seçin.", true);
+  let updated = 0;
+  try {
+    for (const p of picks) {
+      const r = await api("/api/rules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(p) });
+      updated += r.updated;
+    }
+    flash(`${picks.length} kural kaydedildi, ${updated} işlemin kategorisi güncellendi.`);
+    loadTransactions();
+  } catch (err) { flash(err.message, true); }
+});
+
 let txStatement = null, txTimer = null, txRows = [];
 async function loadTransactions() {
+  loadUncategorized();
   const p = new URLSearchParams();
   for (const [k, id] of [["q", "f-q"], ["bank", "f-bank"], ["category", "f-category"], ["since", "f-since"], ["until", "f-until"]])
     if ($(id).value) p.set(k, $(id).value);

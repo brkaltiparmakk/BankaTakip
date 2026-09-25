@@ -161,3 +161,12 @@ def test_category_hint_in_request():
     [tx] = client_with(handler).extract_notifications([("s", "b", None)], categories=["Market", "Akaryakıt"])
     assert "(Market, Akaryakıt)" in seen["text"]
     assert tx.sector == "Evcil Hayvan"
+
+
+def test_suggest_categories():
+    def handler(request):
+        text = json.loads(request.content)["contents"][0]["parts"][0]["text"]
+        assert "[0] KAHVEDE ART" in text and "Market" in text
+        return gemini_reply({"items": [{"index": 0, "category": "Yeme-İçme"}, {"index": 1, "category": "Diğer"}]})
+
+    assert client_with(handler).suggest_categories(["KAHVEDE ART", "XYZ"], ["Market", "Yeme-İçme"]) == ["Yeme-İçme", None]

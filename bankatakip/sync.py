@@ -13,7 +13,7 @@ from .mail import MailClient
 from .ai import BATCH_SIZE, AIError, AIQuotaExceeded, GeminiClient, ai_enabled
 from .parsers import PdfPasswordError, detect_kind, extract_document_text, get_parser
 from .categories import CategoryResolver, recategorizer
-from .parsers.generic import GenericParser, detect_account
+from .parsers.generic import BALANCE_LINES, GenericParser, apply_mail_hints, detect_account, tr_fold
 from .parsers.notifications import (
     account_balance, card_debt, counterparty, has_amount, info_kind, installments, is_salary, loan_info, notification_account,
     notification_sign, parse_notification, remaining_limit,
@@ -64,9 +64,11 @@ def import_statement(
     filename: str = "ekstre.pdf",
     received_at: datetime | None = None,
     ai: "GeminiClient | None" = None,
+    subject: str = "",
+    body: str = "",
 ) -> tuple[int | None, int]:
     """Tek bir ekstre dosyasını (PDF/Excel/HTML) işler. (statement_id, işlem sayısı) döndürür;
-    zaten varsa (None, 0)."""
+    zaten varsa (None, 0). subject/body: ekin geldiği mail (kart ekstresi mi, özet bilgileri)."""
     digest = file_hash(content)
     if storage.has_statement(digest):
         return None, 0
@@ -86,6 +88,8 @@ def import_statement(
             _categorize(ai_statement, resolver)
             ai_statement.account = detect_account(text or filename, ai_statement.kind, bank.name)
             statement = ai_statement
+    if subject or body:
+        apply_mail_hints(statement, parser, text or "", subject, body)
 
     target = None
     if config.attachments_dir is not None:
@@ -95,10 +99,16 @@ def import_statement(
         target = target_dir / f"{stamp}_{digest[:8]}_{_safe_name(filename)}"
         target.write_bytes(content)
 
-    statement_id = storage.save_statement(
-        statement, digest, source=source, file_path=str(target) if target else None,
-        received_at=received_at,
-    )
+    try:
+        statement_id = storage.save_statement(
+            statement, digest, source=source, file_path=str(target) if target else None,
+            received_at=received_at,
+        )
+    except Exception as exc:
+        # Aynı PDF bir mailde iki kez ekliyse ikincisi benzersizlik kısıtına takılır: zaten var
+        if "file_hash" in str(exc) or "UNIQUE" in str(exc).upper():
+            return None, 0
+        raise
     saved = statement.saved_transactions
     return statement_id, len(statement.transactions) if saved is None else saved
 
@@ -154,7 +164,7 @@ def _add_salary(mail, bank: BankConfig, source: str, storage: Storage) -> None:
 
 # Okuma kuralları değiştiğinde artırılır: atlanan mailler yeniden taranır ve elle
 # değiştirilmemiş işlemlerin kategorileri yeni kurallarla güncellenir.
-RULES_VERSION = "4"
+RULES_VERSION = "5"
 
 
 def apply_rule_updates(config: Config, storage: Storage) -> bool:
@@ -167,6 +177,9 @@ def apply_rule_updates(config: Config, storage: Storage) -> bool:
     storage.backfill_counterparties(counterparty)
     # "bilgi" olarak geçilen mailler (maaş, kart borcu, kredi) yeni kurallarla bir kez daha okunur
     storage.reset_skipped_mails(("bilgi",))
+    # PDF metni bozuk olduğu için hesap dökümü sanılan kart ekstreleri (Enpara) yeniden okunur
+    storage.delete_matching_transactions(lambda d: any(k in tr_fold(d) for k in BALANCE_LINES))
+    storage.requeue_statement_mails(lambda subj: "kredi kart" in tr_fold(subj) and "ekstre" in tr_fold(subj))
     storage.set_meta("rules_version", RULES_VERSION)
     return True
 
@@ -415,7 +428,7 @@ def _sync_bank(client: MailClient, folder: str, bank: BankConfig, since: date | 
                 statement_id, count = import_statement(
                     att.content, bank, config, storage, source=account,
                     filename=att.filename, received_at=mail.received,
-                    ai=ai if ai_usable() else None,
+                    ai=ai if ai_usable() else None, subject=mail.subject, body=mail.body_text,
                 )
             except PdfPasswordError as exc:
                 retry_later = True  # şifre tanımlanınca tekrar denensin
